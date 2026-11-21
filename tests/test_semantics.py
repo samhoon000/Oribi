@@ -1,6 +1,6 @@
 import pytest
 
-from oribi import inspect
+from oribi import ProfileOptions, inspect
 
 
 def test_roles_have_evidence(sales_frame):
@@ -40,6 +40,58 @@ def test_numeric_identifier_name_outweighs_numeric_measure_type():
 
     context = inspect(pd.DataFrame({"customer_id": [101, 102, 103, 104]}))
     assert context.columns[0].semantic.role == "identifier"
+
+
+@pytest.mark.parametrize("dtype", ["float64", "Float32"])
+def test_fractional_identifiers_do_not_depend_on_sample_limit(dtype):
+    import pandas as pd
+
+    frame = pd.DataFrame({"sensor_id": pd.Series([1.25, 2.5, 3.75, 4.5], dtype=dtype)})
+    columns = [
+        inspect(frame, options=ProfileOptions(top_k=limit)).get_column("sensor_id")
+        for limit in (0, 1, 10)
+    ]
+
+    assert columns[0].semantic == columns[1].semantic == columns[2].semantic
+    assert columns[0].semantic.role == "unknown"
+    assert "non_identifier_numeric_domain" in {e.code for e in columns[0].semantic.evidence}
+    assert columns[0].statistics.top_values == ()
+    assert columns[0].statistics.top_frequencies == ()
+
+
+def test_fractional_identifier_with_arrow_float_dtype():
+    import pandas as pd
+
+    pytest.importorskip("pyarrow")
+    frame = pd.DataFrame({"sensor_id": pd.Series([1.0, 2.0, 3.25, None], dtype="float64[pyarrow]")})
+    column = inspect(frame, options=ProfileOptions(top_k=0)).get_column("sensor_id")
+
+    assert column.semantic.role == "unknown"
+    assert "non_identifier_numeric_domain" in {e.code for e in column.semantic.evidence}
+
+
+def test_fractional_identifier_value_outside_top_sample_still_counts():
+    import pandas as pd
+
+    frame = pd.DataFrame({"sensor_id": [1.0, 1.0, 1.0, 2.0, 3.25]})
+    column = inspect(frame, options=ProfileOptions(top_k=1)).get_column("sensor_id")
+
+    assert column.statistics.top_values == ((1.0, 3),)
+    assert column.semantic.role == "unknown"
+    assert "non_identifier_numeric_domain" in {e.code for e in column.semantic.evidence}
+
+
+@pytest.mark.parametrize("dtype", ["Int64", "Float64"])
+def test_integer_identifiers_still_work_when_top_samples_are_disabled(dtype):
+    import pandas as pd
+
+    frame = pd.DataFrame({"sensor_id": pd.Series([1, 2, 3, 4], dtype=dtype)})
+    column = inspect(frame, options=ProfileOptions(top_k=0)).get_column("sensor_id")
+
+    assert column.semantic.role == "identifier"
+    assert "non_identifier_numeric_domain" not in {e.code for e in column.semantic.evidence}
+    assert column.statistics.top_values == ()
+    assert column.statistics.top_frequencies == ()
 
 
 def test_reusable_code_is_eligible_for_relationship_detection():

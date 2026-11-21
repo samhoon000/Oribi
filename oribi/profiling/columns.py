@@ -111,11 +111,15 @@ def _top_values(counts: pd.Series, limit: int) -> tuple[tuple[Any, int], ...]:
     return tuple(ranked)
 
 
-def profile_column(obs: ColumnObservation, row_count: int, top_k: int, include_quantiles: bool) -> StatisticsContext:
+def profile_column(
+    obs: ColumnObservation, row_count: int, top_k: int, include_quantiles: bool,
+) -> tuple[StatisticsContext, bool]:
+    """Return public statistics and the observed fractional-value signal."""
     s = obs.series
     denom = row_count or 1
     non_null = s.dropna()
     values: dict[str, Any] = {}
+    has_fractional_values = False
     if obs.logical_type == "numeric" and len(non_null):
         numeric_series = (
             cast(Any, non_null).sparse.to_dense()
@@ -136,6 +140,10 @@ def profile_column(obs: ColumnObservation, row_count: int, top_k: int, include_q
             # the finite subset so no warning is raised; infinities are simply
             # excluded rather than turning the whole statistic into NaN.
             finite = numeric[numeric.map(math.isfinite)]
+            if pd.api.types.is_float_dtype(finite.dtype):
+                # Use the already-filtered finite values; Arrow-backed Series
+                # do not implement modulo.
+                has_fractional_values = bool(((finite.to_numpy() % 1) != 0).any())
             values.update(
                 minimum=finite.min() if len(finite) else None,
                 maximum=finite.max() if len(finite) else None,
@@ -167,10 +175,11 @@ def profile_column(obs: ColumnObservation, row_count: int, top_k: int, include_q
             ranked = _top_values(counts, top_k)
             values["top_values"] = tuple((_snapshot_top_value(k, {}), count) for k, count in ranked)
             values["top_frequencies"] = tuple(count for _, count in ranked)
-    return StatisticsContext(
+    statistics = StatisticsContext(
         missing_count=obs.missing_count,
         missing_rate=obs.missing_count / denom,
         distinct_count=obs.distinct_count,
         distinct_rate=obs.distinct_count / denom,
         **values,
     )
+    return statistics, has_fractional_values

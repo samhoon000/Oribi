@@ -110,17 +110,22 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
     duplicate_rate = (duplicates / nrows) if duplicates is not None and nrows else (0.0 if duplicates == 0 else None)
     names = list(df.columns)
     observations = {name: session.observe(name) for name in names}
-    stats = {name: profile_column(obs, nrows, options.top_k, options.include_quantiles and not exact_row_limit_exceeded) for name, obs in observations.items()}
+    profiles = {
+        name: profile_column(obs, nrows, options.top_k, options.include_quantiles and not exact_row_limit_exceeded)
+        for name, obs in observations.items()
+    }
+    stats = {name: statistics for name, (statistics, _) in profiles.items()}
     semantics = {
         name: infer_semantic(
             name,
             observations[name].logical_type,
-            stats[name],
+            statistics,
             nrows,
+            has_fractional_values=has_fractional_values,
             is_float=pd.api.types.is_float_dtype(observations[name].series.dtype),
             date_evidence=observations[name].date_evidence,
         )
-        for name in names
+        for name, (statistics, has_fractional_values) in profiles.items()
     }
     # Unparsed dates can represent the same instant in different forms, and
     # native Period columns represent calendar intervals rather than entity keys.

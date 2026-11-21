@@ -40,6 +40,7 @@ def infer_semantic(
     stats: StatisticsContext,
     row_count: int,
     *,
+    has_fractional_values: bool,
     is_float: bool = False,
     date_evidence: Evidence | None = None,
 ) -> SemanticContext:
@@ -134,11 +135,6 @@ def infer_semantic(
         )
     )
 
-    has_fractional_sample = any(
-        isinstance(val, float) and val.is_integer() is False
-        for val, _ in getattr(stats, "top_values", ())
-    )
-
     if logical_type == "numeric":
         measure_score = .48
         evidence.append(Evidence("numeric_type", "Column has a numeric dtype"))
@@ -163,7 +159,7 @@ def infer_semantic(
             if "identifier" in votes:
                 votes["identifier"] = min(votes["identifier"], .48)
             evidence.append(Evidence("constant_numeric_values", "Numeric values have zero dispersion"))
-        if "identifier" in votes and (negative_count > 0 or has_fractional_sample or (is_float and not explicit_identifier_name)):
+        if "identifier" in votes and (negative_count > 0 or has_fractional_values or (is_float and not explicit_identifier_name)):
             # Negative or fractional values conflict with entity identifier semantics.
             votes["identifier"] = round(votes["identifier"] * .60, 2)
             evidence.append(Evidence("non_identifier_numeric_domain", "Floating-point or negative values conflict with entity identity"))
