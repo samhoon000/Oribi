@@ -23,6 +23,11 @@ def _md(value: Any) -> str:
     return "\\" + text if text.startswith("#") else text
 
 
+def _md_column_name(name: Any) -> str:
+    """Render a column label for display in Markdown."""
+    return "(empty column name)" if name == "" else _md(name)
+
+
 def to_markdown(context: Any, *, include_values: bool = False) -> str:
     profile = context.profile
     lines = [
@@ -65,7 +70,7 @@ def to_markdown(context: Any, *, include_values: bool = False) -> str:
     }
     lines += ["", "## Column roles", ""]
     lines.extend(
-        f"- **{_md(column.name)}**: {role_labels.get(column.semantic.role, column.semantic.role)} "
+        f"- **{_md_column_name(column.name)}**: {role_labels.get(column.semantic.role, column.semantic.role)} "
         f"({column.semantic.confidence:.0%} confidence)"
         for column in sorted(context.columns, key=lambda item: item.name)
     )
@@ -83,21 +88,21 @@ def to_markdown(context: Any, *, include_values: bool = False) -> str:
                 if relationship.kind == "identifies_observations":
                     exact = column.cardinality is not None and column.cardinality.uniqueness_ratio == 1 and column.cardinality.missing_count == 0
                     description = "appears to identify observations" if exact else "is a mostly-unique observation-key candidate"
-                    lines.append(f"- **{_md(column.name)}** {description} ({statement}{strength}; {relationship.confidence:.0%} confidence).")
+                    lines.append(f"- **{_md_column_name(column.name)}** {description} ({statement}{strength}; {relationship.confidence:.0%} confidence).")
                 elif relationship.kind == "jointly_identifies_observations":
                     composite_key = frozenset((column.name, *relationship.related_columns))
                     if composite_key in rendered_composite_keys:
                         continue
                     rendered_composite_keys.add(composite_key)
-                    components = " + ".join(_md(c) for c in (column.name, *relationship.related_columns))
+                    components = " + ".join(_md_column_name(c) for c in (column.name, *relationship.related_columns))
                     lines.append(f"- **{components}** jointly identify observations ({statement}{strength}; {relationship.confidence:.0%} confidence).")
                 elif relationship.kind == "groups_observations":
-                    lines.append(f"- **{_md(column.name)}** groups observations ({statement}{strength}; {relationship.confidence:.0%} confidence).")
+                    lines.append(f"- **{_md_column_name(column.name)}** groups observations ({statement}{strength}; {relationship.confidence:.0%} confidence).")
                 elif relationship.kind == "measure_at_grain":
-                    grain = " + ".join(_md(c) for c in relationship.related_columns) if relationship.related_columns else "the observed record grain"
-                    lines.append(f"- **{_md(column.name)}** is a quantitative measure at {grain} ({statement}{strength}; {relationship.confidence:.0%} confidence).")
+                    grain = " + ".join(_md_column_name(c) for c in relationship.related_columns) if relationship.related_columns else "the observed record grain"
+                    lines.append(f"- **{_md_column_name(column.name)}** is a quantitative measure at {grain} ({statement}{strength}; {relationship.confidence:.0%} confidence).")
                 elif relationship.kind == "temporal_attribute":
-                    lines.append(f"- **{_md(column.name)}** is a temporal attribute associated with observations ({statement}{strength}; {relationship.confidence:.0%} confidence).")
+                    lines.append(f"- **{_md_column_name(column.name)}** is a temporal attribute associated with observations ({statement}{strength}; {relationship.confidence:.0%} confidence).")
         one_to_one_pairs = {
             frozenset((relation.source_column, relation.target_column))
             for relation in context.relationships if relation.kind == "one_to_one"
@@ -114,14 +119,14 @@ def to_markdown(context: Any, *, include_values: bool = False) -> str:
             if relation.kind == "one_to_many" and relation.evidence:
                 average = relation.evidence[0].details.get("average_entities_per_group")
                 if average is not None:
-                    detail += f" · average {average:.2f} {_md(relation.target_column)} values per {_md(relation.source_column)}"
-            lines.append(f"- **{_md(relation.source_column)} → {_md(relation.target_column)}: {relation.kind}** ({detail})")
+                    detail += f" · average {average:.2f} {_md_column_name(relation.target_column)} values per {_md_column_name(relation.source_column)}"
+            lines.append(f"- **{_md_column_name(relation.source_column)} → {_md_column_name(relation.target_column)}: {relation.kind}** ({detail})")
 
     lines += ["", "## Columns", ""]
     for col in context.columns:
         s = col.statistics
         lines += [
-            f"### {_md(col.name)}",
+            f"### {_md_column_name(col.name)}",
             "",
             f"**{col.dtype}** ({col.logical_type}) · **{col.semantic.role}** (confidence {col.semantic.confidence:.2f})",
             "",
