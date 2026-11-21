@@ -1,7 +1,7 @@
 """Compact AI-oriented rendering of an existing context snapshot."""
 
 from collections.abc import Iterable, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, time
 from numbers import Integral, Number
 from typing import Any, NamedTuple, SupportsInt
 
@@ -223,9 +223,8 @@ def _format_range_value(value: Any) -> str:
     the date-only form.
     """
     if isinstance(value, datetime):
-        # Only collapse midnight to date for naive datetimes.
-        # Timezone-aware values must preserve the offset.
-        if value.tzinfo is None and value.time().isoformat() == "00:00:00":
+        # time() drops the sub-microsecond component of pandas timestamps.
+        if value.tzinfo is None and value.time() == time.min and getattr(value, "nanosecond", 0) == 0:
             return value.date().isoformat()
         return str(value)
     if isinstance(value, date):

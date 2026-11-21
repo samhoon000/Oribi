@@ -335,6 +335,20 @@ def test_markdown_renders_column_names_as_literal_text():
     assert "### order_id" in markdown
     assert r"order\_id" not in markdown
 
+@pytest.mark.parametrize("tz", [None, "UTC"])
+def test_compact_context_preserves_nanosecond_ranges_near_midnight(tz):
+    stamps = pd.date_range("2026-01-01 00:00:00.000000001", periods=2, freq="ns", tz=tz)
+    context = inspect(pd.DataFrame({"stamp": stamps}))
+    offset = "+00:00" if tz else ""
+    bounds = (
+        f"Range 2026-01-01 00:00:00.000000001{offset} → "
+        f"2026-01-01 00:00:00.000000002{offset}"
+    )
+
+    assert bounds in context.to_context(include_values=True)
+    assert "Range " not in context.to_context()
+
+
 def test_compact_context_preserves_timezone_offset_on_midnight_ranges():
     """Timezone-aware midnight bounds keep time and offset; naive still date-only."""
     from datetime import datetime, timedelta, timezone
