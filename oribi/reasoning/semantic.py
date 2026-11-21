@@ -19,12 +19,16 @@ _LABEL_NAME_TOKENS = {
 _SUBJECT_NAME_TOKENS = _MEASURE_NAME_TOKENS | _LABEL_NAME_TOKENS
 _RANK_NAME_TOKENS = {"rank", "ranks", "ranking", "percentile", "percentiles", "quantile", "quantiles", "decile", "deciles"}
 _SOFT_IDENTIFIER_SUFFIX_TOKENS = {"no", "num", "number"}
+_CAMEL_BOUNDARY_UPPER = re.compile(r"([A-Z]+)([A-Z][a-z])")
+_CAMEL_BOUNDARY_LOWER = re.compile(r"([a-z0-9])([A-Z])")
 _NAME_WORD = re.compile(r"[a-z0-9]+")
 _VERSION_SUFFIX = re.compile(r"(?<=[^a-z0-9])v(?:er(?:sion)?)?[^a-z0-9]*[0-9]+$")
 
 
 def column_name_words(name: str) -> list[str]:
-    normalized = name.lower()
+    segmented = _CAMEL_BOUNDARY_UPPER.sub(r"\1 \2", str(name))
+    segmented = _CAMEL_BOUNDARY_LOWER.sub(r"\1 \2", segmented)
+    normalized = segmented.lower()
     if normalized[-1:].isdigit():
         normalized = _VERSION_SUFFIX.sub("", normalized)
     return _NAME_WORD.findall(normalized)

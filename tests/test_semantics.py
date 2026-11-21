@@ -212,3 +212,31 @@ def test_conflicting_and_borderline_numeric_signals_remain_conservative():
 
     assert by_name["signed_code"].semantic.role == "dimension"
     assert not any(r.operation in {"SUM", "MEAN"} and r.disposition == "recommended" for r in by_name["signed_code"].recommendations)
+
+
+def test_camelcase_and_acronym_identifier_names():
+    import pandas as pd
+
+    from oribi.reasoning.semantic import column_name_words
+
+    values = [1, 1, 2, 2, 3, 3, 4]
+    for name in ("customerId", "customerID", "customer_id"):
+        column = inspect(pd.DataFrame({name: values})).get_column(name)
+        assert column.semantic.role == "identifier"
+        assert "name_identifier_hint" in {e.code for e in column.semantic.evidence}
+        assert any(r.operation == "COUNT DISTINCT" and r.disposition == "recommended" for r in column.recommendations)
+        assert any(r.operation == "SUM" and r.disposition == "not_applicable" for r in column.recommendations)
+        assert any(r.operation == "MEAN" and r.disposition == "not_applicable" for r in column.recommendations)
+
+    paid_column = inspect(pd.DataFrame({"paid": values})).get_column("paid")
+    assert "name_identifier_hint" not in {e.code for e in paid_column.semantic.evidence}
+    assert paid_column.semantic.role != "identifier"
+
+    assert column_name_words("customerId") == ["customer", "id"]
+    assert column_name_words("customerID") == ["customer", "id"]
+    assert column_name_words("customer_id") == ["customer", "id"]
+    assert column_name_words("paid") == ["paid"]
+    assert column_name_words("amount_band_v2") == ["amount", "band"]
+    assert column_name_words("revenue_bucket_version_3") == ["revenue", "bucket"]
+    assert column_name_words("profit_rank_v3") == ["profit", "rank"]
+    assert column_name_words("sales_category_code_v1") == ["sales", "category", "code"]
