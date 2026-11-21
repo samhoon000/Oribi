@@ -1,6 +1,9 @@
+from unittest.mock import patch
+
 import pandas as pd
 
 from oribi import CardinalityContext, ProfileOptions, inspect
+from oribi.profiling import relationships
 
 
 def _column(context, name):
@@ -491,3 +494,32 @@ def test_long_numeric_group_values_can_relate_to_unique_observations():
     )
     assert relation.target_column == "E"
     assert relation.evidence[0].details["average_entities_per_group"] == 100
+
+
+def test_zero_relationship_column_limit_skips_pair_scan_preparation():
+    frame = pd.DataFrame({
+        "group": ["a", "a", "b", "b"],
+        "item_id": [1, 2, 3, 4],
+    })
+
+    with patch.object(relationships, "_nunique", wraps=relationships._nunique) as count:
+        zero_limit = inspect(frame, options=ProfileOptions(max_relationship_columns=0))
+
+    assert zero_limit.relationships == ()
+    assert count.call_count == 0
+    assert _column(zero_limit, "group").cardinality.unique_count == 2
+    assert _column(zero_limit, "item_id").cardinality.unique_count == 4
+    assert any(
+        rel.kind == "groups_observations"
+        for rel in _column(zero_limit, "group").relationships
+    )
+    assert any(
+        rel.kind == "identifies_observations"
+        for rel in _column(zero_limit, "item_id").relationships
+    )
+
+    positive_limit = inspect(frame, options=ProfileOptions(max_relationship_columns=2))
+    assert any(
+        rel.kind == "one_to_many" and rel.source_column == "group" and rel.target_column == "item_id"
+        for rel in positive_limit.relationships
+    )
