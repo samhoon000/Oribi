@@ -335,6 +335,16 @@ def test_markdown_renders_column_names_as_literal_text():
     assert "### order_id" in markdown
     assert r"order\_id" not in markdown
 
+
+def test_markdown_displays_empty_column_names_explicitly():
+    import pandas as pd
+
+    markdown = inspect(pd.DataFrame({"": [1, 2, 3]})).to_markdown()
+
+    assert "### (empty column name)" in markdown
+    assert "- **(empty column name)**: categorical dimension" in markdown
+    assert "### " not in [line for line in markdown.splitlines() if line.startswith("### ") and line != "### (empty column name)"]
+
 def test_compact_context_preserves_timezone_offset_on_midnight_ranges():
     """Timezone-aware midnight bounds keep time and offset; naive still date-only."""
     from datetime import datetime, timedelta, timezone
