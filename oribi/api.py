@@ -122,7 +122,8 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
         )
         for name in names
     }
-    # Unparsed dates can represent the same instant in different forms.
+    # Unparsed dates can represent the same instant in different forms, and
+    # native Period columns represent calendar intervals rather than entity keys.
     structural_roles = {
         name: semantics[name].role for name in names
         if observations[name].date_evidence is None
