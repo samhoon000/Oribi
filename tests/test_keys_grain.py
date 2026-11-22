@@ -135,3 +135,37 @@ def test_tiny_unique_column_does_not_receive_near_certain_grain_confidence():
     context = inspect(pd.DataFrame({"record_id": [1, 2, 3]}))
     assert context.grain.status == "estimated"
     assert context.grain.confidence < 0.7
+
+
+def test_stringified_dict_column_cannot_verify_key_or_establish_grain():
+    frame = pd.DataFrame({
+        "payload": [
+            {"a": 1, "b": 2},
+            {"b": 2, "a": 1},
+            {"a": 2, "b": 2},
+            {"b": 3, "a": 1},
+        ]
+    })
+    context = inspect(frame)
+    assert context.profile.duplicate_row_count == 1
+    assert not any(key.columns == ("payload",) and key.verified_unique for key in context.candidate_keys)
+    assert context.grain.status == "undetermined"
+    assert context.grain.columns == ()
+
+
+def test_unique_scalar_key_still_verifies_alongside_unhashable_dict_column():
+    frame = pd.DataFrame({
+        "record_id": [1, 2, 3, 4],
+        "payload": [
+            {"a": 1, "b": 2},
+            {"b": 2, "a": 1},
+            {"a": 2, "b": 2},
+            {"b": 3, "a": 1},
+        ],
+    })
+    context = inspect(frame)
+    assert [(key.columns, key.verified_unique) for key in context.candidate_keys] == [
+        (("record_id",), True)
+    ]
+    assert context.grain.status == "estimated"
+    assert context.grain.columns == ("record_id",)

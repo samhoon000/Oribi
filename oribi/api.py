@@ -131,6 +131,7 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
     key_candidates, grain = detect_keys(
         df, names, stats, structural_roles,
         max_columns=options.max_key_columns, max_exact_rows=options.max_exact_rows,
+        exact_distinct={name: observations[name].distinct_count_exact for name in names},
     )
     cardinalities = {
         name: profile_cardinality(observations[name].series, nrows)

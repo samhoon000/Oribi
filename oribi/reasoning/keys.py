@@ -22,6 +22,7 @@ def detect_candidate_keys(
     roles: dict[str, str],
     max_columns: int = 8,
     max_exact_rows: int = 100_000,
+    exact_distinct: Mapping[str, bool] | None = None,
 ) -> tuple[KeyCandidate, ...]:
     """Collect qualifying single and bounded pair candidates.
 
@@ -39,7 +40,8 @@ def detect_candidate_keys(
         column_stats = stats[name]
         rate = column_stats.distinct_count / row_count
         if (
-            roles.get(name) in _SINGLE_KEY_ROLES
+            (exact_distinct is None or exact_distinct.get(name, True))
+            and roles.get(name) in _SINGLE_KEY_ROLES
             and getattr(frame[name].dtype, "kind", None) != "m"
             and rate >= _MIN_SINGLE_UNIQUENESS
             and column_stats.missing_rate <= _MAX_SINGLE_MISSING_RATE
@@ -167,12 +169,14 @@ def detect_keys(
     roles: dict[str, str],
     max_columns: int = 8,
     max_exact_rows: int = 100_000,
+    exact_distinct: Mapping[str, bool] | None = None,
 ) -> tuple[tuple[KeyCandidate, ...], GrainContext]:
     """Collect candidate keys, then independently select a grain hypothesis."""
     candidates = detect_candidate_keys(
         frame, names, stats, roles,
         max_columns=max_columns,
         max_exact_rows=max_exact_rows,
+        exact_distinct=exact_distinct,
     )
     row_count = len(frame)
     if len(frame) == 0:

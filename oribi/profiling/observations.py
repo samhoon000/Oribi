@@ -24,6 +24,7 @@ class ColumnObservation:
     logical_type: str
     stats: dict[str, Any] = field(default_factory=dict)
     date_evidence: Evidence | None = None
+    distinct_count_exact: bool = True
 
 
 class AnalysisSession:
@@ -45,10 +46,12 @@ class AnalysisSession:
         if pd.api.types.is_complex_dtype(series.dtype):
             raise InvalidInputError(f"Complex-valued column {name!r} is not supported")
         missing = int(series.isna().sum())
+        distinct_count_exact = True
         try:
             distinct = int(series.nunique(dropna=True))
         except (TypeError, ValueError):
             distinct = int(series.dropna().astype(str).nunique())
+            distinct_count_exact = False
         date_evidence = None
         if pd.api.types.is_bool_dtype(series.dtype):
             logical = "boolean"
@@ -86,6 +89,14 @@ class AnalysisSession:
                 date_evidence = date_like_evidence(values, kind, distinct)
         else:
             logical = "unknown"
-        obs = ColumnObservation(str(name), series, missing, distinct, logical, date_evidence=date_evidence)
+        obs = ColumnObservation(
+            str(name),
+            series,
+            missing,
+            distinct,
+            logical,
+            date_evidence=date_evidence,
+            distinct_count_exact=distinct_count_exact,
+        )
         self.observations[name] = obs
         return obs
