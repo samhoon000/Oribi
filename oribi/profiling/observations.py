@@ -61,6 +61,15 @@ class AnalysisSession:
             logical = "duration"
         elif isinstance(series.dtype, pd.CategoricalDtype):
             logical = "categorical"
+        elif isinstance(series.dtype, pd.PeriodDtype):
+            # Native Period columns represent calendar intervals rather than
+            # point timestamps or entity identifiers.
+            logical = "unknown"
+            date_evidence = Evidence(
+                "period_dtype",
+                "Column has a pandas Period dtype",
+                {"dtype": str(series.dtype)},
+            )
         elif series.dtype == object or pd.api.types.is_string_dtype(series.dtype):
             values = series.dropna()
             kind = "empty" if values.empty else pd.api.types.infer_dtype(values, skipna=False)

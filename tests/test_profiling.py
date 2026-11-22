@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -117,6 +118,22 @@ def test_short_and_ambiguous_series_do_not_generate_gap_warning():
     _, _, ambiguous = _temporal_warnings(["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-05", "2026-01-07"])
     assert short == []
     assert ambiguous == []
+
+
+def test_overflowing_timestamp_interval_skips_gap_detection_and_preserves_bounds():
+    stamps = np.array(
+        ["1680-01-01", "1680-01-02", "2250-01-01", "2250-01-02"],
+        dtype="datetime64[ns]",
+    )
+    context = inspect(pd.DataFrame({"stamp": stamps}))
+    column = context.columns[0]
+
+    assert context.profile.row_count == 4
+    assert column.logical_type == "temporal"
+    assert column.statistics.minimum == pd.Timestamp("1680-01-01")
+    assert column.statistics.maximum == pd.Timestamp("2250-01-02")
+    assert not any(w.code == "potential_temporal_gap" for w in column.warnings)
+    assert not any(w.code == "potential_temporal_gap" for w in context.warnings)
 
 
 def test_timezone_aware_and_nullable_dtypes_profile():

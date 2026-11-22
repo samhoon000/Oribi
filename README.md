@@ -144,6 +144,37 @@ Oribi currently works with in memory pandas DataFrames. It does not connect to d
 - Profiling may require several full column scans. Exact composite key and relationship checks are bounded by configured row and column limits.
 - If pandas cannot compare cell values, the duplicate-row count is omitted and Oribi records a `duplicate_check_unavailable` warning.
 
+### Resetting indexes with colliding or repeated names
+
+Oribi profiles non-default DataFrame index metadata separately in `context.profile.index` (and summarizes it in Markdown and compact context reports) rather than treating index levels as columns. Index levels only participate in column profiling, semantic roles, candidate keys, and relationships after you explicitly move them into columns.
+
+Both text reports suggest using the DataFrame index or calling `reset_index()`. A bare `df.reset_index()` raises `ValueError` when an index level shares a name with an existing column or repeats a level name in a `MultiIndex`. Pass `names=...` (supported across Oribi's `pandas>=1.5.3,<4` range) with one unique string label per index level to move the index into columns while preserving both the index values and existing columns:
+
+```python
+import pandas as pd
+from oribi import inspect
+
+# Single index whose name collides with an existing column
+df = pd.DataFrame({"batch": [1, 2]}, index=pd.Index([10, 20], name="batch"))
+print(inspect(df).profile.index.names)  # ('batch',)
+
+# df.reset_index() raises ValueError: cannot insert batch, already exists
+reset_df = df.reset_index(names=["batch_index"])
+print(reset_df.columns.tolist())  # ['batch_index', 'batch']
+print(reset_df.to_dict(orient="list"))  # {'batch_index': [10, 20], 'batch': [1, 2]}
+context = inspect(reset_df)
+
+# Repeated-name MultiIndex (and an existing column with the same name):
+# supply one unique output name per index level
+multi_df = pd.DataFrame(
+    {"group": [100, 200]},
+    index=pd.MultiIndex.from_tuples([("a", "x"), ("b", "y")], names=["group", "group"]),
+)
+reset_multi = multi_df.reset_index(names=["group_outer", "group_inner"])
+print(reset_multi.columns.tolist())  # ['group_outer', 'group_inner', 'group']
+multi_context = inspect(reset_multi)
+```
+
 ## Development
 
 Clone the repository and install the development dependencies:

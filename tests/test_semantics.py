@@ -240,3 +240,73 @@ def test_camelcase_and_acronym_identifier_names():
     assert column_name_words("revenue_bucket_version_3") == ["revenue", "bucket"]
     assert column_name_words("profit_rank_v3") == ["profit", "rank"]
     assert column_name_words("sales_category_code_v1") == ["sales", "category", "code"]
+
+
+def test_distinct_period_column_gets_temporal_role_without_becoming_identifier_or_grain():
+    import pandas as pd
+
+    periods = pd.period_range("2024-01", periods=8, freq="M")
+    frame = pd.DataFrame({"month": periods})
+    expected = frame.copy()
+    context = inspect(frame)
+    column = context.get_column("month")
+
+    assert column.dtype == str(periods.dtype)
+    assert column.semantic.role == "temporal"
+    evidence = next(e for e in column.semantic.evidence if e.code == "period_dtype")
+    assert evidence.details == {"dtype": str(periods.dtype)}
+    assert column.statistics.date_range is None
+    assert not context.candidate_keys
+    assert context.grain.status == "undetermined"
+    assert context.grain.columns == ()
+    assert not any(w.code == "potential_temporal_gap" for w in context.warnings)
+    pd.testing.assert_frame_equal(frame, expected)
+
+
+def test_repeated_and_missing_periods_never_create_period_key_or_gap_warning():
+    import pandas as pd
+
+    frame = pd.DataFrame({
+        "month": pd.Series(
+            [
+                pd.Period("2024-01", "M"),
+                pd.Period("2024-01", "M"),
+                pd.Period("2024-02", "M"),
+                pd.Period("2024-03", "M"),
+                pd.NaT,
+                pd.Period("2024-05", "M"),
+                pd.Period("2024-06", "M"),
+            ],
+            dtype="period[M]",
+        ),
+        "region": ["north", "south", "north", "south", "north", "south", "north"],
+    })
+    context = inspect(frame)
+    column = context.get_column("month")
+
+    assert column.semantic.role == "temporal"
+    assert any(e.code == "period_dtype" for e in column.semantic.evidence)
+    assert column.statistics.date_range is None
+    assert not any("month" in key.columns for key in context.candidate_keys)
+    assert context.grain.status == "undetermined"
+    assert not any(w.code == "potential_temporal_gap" for w in context.warnings)
+
+
+def test_real_record_id_still_establishes_grain_alongside_period_column():
+    import pandas as pd
+
+    frame = pd.DataFrame({
+        "record_id": list(range(1, 9)),
+        "month": pd.period_range("2024-01", periods=8, freq="M"),
+        "revenue": [100.0, 120.0, 115.0, 140.0, 130.0, 150.0, 160.0, 175.0],
+    })
+    context = inspect(frame)
+    month = context.get_column("month")
+    record_id = context.get_column("record_id")
+
+    assert month.semantic.role == "temporal"
+    assert any(e.code == "period_dtype" for e in month.semantic.evidence)
+    assert record_id.semantic.role == "identifier"
+    assert context.grain.status == "estimated"
+    assert context.grain.columns == ("record_id",)
+    assert [key.columns for key in context.candidate_keys] == [("record_id",)]

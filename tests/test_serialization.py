@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from numbers import Real
 
 import numpy as np
 import pandas as pd
@@ -8,6 +9,7 @@ import pytest
 from oribi import ProfileOptions, inspect
 from oribi.models.evidence import CategoricalContext
 from oribi.serialization.context import _format_aggregations, _format_range_value
+from oribi.serialization.dict import _normalize
 
 
 def test_serialization_outputs(sales_frame):
@@ -335,6 +337,20 @@ def test_markdown_renders_column_names_as_literal_text():
     assert "### order_id" in markdown
     assert r"order\_id" not in markdown
 
+@pytest.mark.parametrize("tz", [None, "UTC"])
+def test_compact_context_preserves_nanosecond_ranges_near_midnight(tz):
+    stamps = pd.date_range("2026-01-01 00:00:00.000000001", periods=2, freq="ns", tz=tz)
+    context = inspect(pd.DataFrame({"stamp": stamps}))
+    offset = "+00:00" if tz else ""
+    bounds = (
+        f"Range 2026-01-01 00:00:00.000000001{offset} → "
+        f"2026-01-01 00:00:00.000000002{offset}"
+    )
+
+    assert bounds in context.to_context(include_values=True)
+    assert "Range " not in context.to_context()
+
+
 def test_compact_context_preserves_timezone_offset_on_midnight_ranges():
     """Timezone-aware midnight bounds keep time and offset; naive still date-only."""
     from datetime import datetime, timedelta, timezone
@@ -552,3 +568,142 @@ def test_markdown_renders_empty_column_names_explicitly():
     exported = context.to_dict()
     assert exported["columns"][0]["name"] == ""
     assert json.loads(context.to_json())["columns"][0]["name"] == ""
+
+def _frame_with_two_temporal_gaps(extra=None):
+    import pandas as pd
+
+    dates = pd.date_range("2026-01-01", periods=12, freq="D")
+    observed = dates[[i for i in range(12) if i not in (3, 7)]]
+    data = {"observed_at": observed}
+    if extra:
+        data.update(extra)
+    return pd.DataFrame(data)
+
+
+def test_compact_context_keeps_separate_temporal_gaps_visible():
+    context = inspect(_frame_with_two_temporal_gaps())
+
+    assert len([w for w in context.warnings if w.code == "potential_temporal_gap"]) == 2
+    assert context.to_context().count("has a possible temporal gap") == 2
+
+
+def test_compact_context_still_shows_an_ordinary_warning_once():
+    amount = [-1.0, 2, 3, -4, 5, 6, 7, 8, 9, 10]
+    context = inspect(_frame_with_two_temporal_gaps({"amount": amount}))
+    warning = next(w for w in context.warnings if w.code == "negative_measure_values")
+
+    assert context.to_context().count(warning.message) == 1
+
+
+def test_compact_context_does_not_expose_temporal_gap_dates():
+    rendered = inspect(_frame_with_two_temporal_gaps()).to_context()
+
+    assert "2026-01-04" not in rendered
+    assert "2026-01-08" not in rendered
+
+
+def test_truncated_context_keeps_separate_temporal_gaps_visible():
+    context = inspect(_frame_with_two_temporal_gaps())
+
+    rendered = context.to_context(max_chars=700)
+
+    assert len(rendered) <= 700
+    assert rendered.count("has a possible temporal gap") == 2
+
+
+def test_summary_lists_each_separate_temporal_gap():
+    summary = inspect(_frame_with_two_temporal_gaps()).summary()
+
+    assert "2 analytical warning(s) detected." in summary
+    assert summary.count("has a possible temporal gap") == 2
+
+
+def _strict_json_loads(payload: str):
+    def reject_constant(constant: str):
+        raise AssertionError(f"Nonstandard JSON constant emitted: {constant}")
+
+    return json.loads(payload, parse_constant=reject_constant)
+
+
+def test_structured_exports_handle_numpy_longdouble_index_name():
+    index = pd.Index(["a", "b", "c"], name=np.longdouble("1.25"))
+    context = inspect(pd.DataFrame({"amount": [1, 2, 3]}, index=index))
+
+    exported = context.to_dict()
+    encoded = context.to_json()
+
+    assert exported["profile"]["index"]["names"] == [1.25]
+    assert type(exported["profile"]["index"]["names"][0]) is float
+    assert _strict_json_loads(encoded) == exported
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [
+        np.longdouble("nan"),
+        np.longdouble("inf"),
+        np.longdouble("-inf"),
+    ],
+)
+def test_structured_exports_normalize_non_finite_longdouble_to_none(raw_value):
+    index = pd.Index(["a", "b", "c"], name=raw_value)
+    context = inspect(pd.DataFrame({"amount": [1, 2, 3]}, index=index))
+
+    exported = context.to_dict()
+    encoded = context.to_json()
+
+    assert exported["profile"]["index"]["names"] == [None]
+    assert _strict_json_loads(encoded) == exported
+
+
+def test_normalize_maps_out_of_range_extended_floats_to_none():
+    class OverflowingExtendedFloat(Real):
+        def item(self):
+            return self
+
+        def __float__(self):
+            raise OverflowError("extended float outside float64 range")
+
+        def __abs__(self): return self
+        def __add__(self, other): return NotImplemented
+        def __ceil__(self): return 0
+        def __eq__(self, other): return self is other
+        def __floor__(self): return 0
+        def __floordiv__(self, other): return NotImplemented
+        def __le__(self, other): return NotImplemented
+        def __lt__(self, other): return NotImplemented
+        def __mod__(self, other): return NotImplemented
+        def __mul__(self, other): return NotImplemented
+        def __neg__(self): return self
+        def __pos__(self): return self
+        def __pow__(self, other): return NotImplemented
+        def __radd__(self, other): return NotImplemented
+        def __rfloordiv__(self, other): return NotImplemented
+        def __rmod__(self, other): return NotImplemented
+        def __rmul__(self, other): return NotImplemented
+        def __round__(self, ndigits=None): return 0
+        def __rpow__(self, other): return NotImplemented
+        def __rtruediv__(self, other): return NotImplemented
+        def __truediv__(self, other): return NotImplemented
+        def __trunc__(self): return 0
+
+    assert _normalize(OverflowingExtendedFloat()) is None
+    if np.finfo(np.longdouble).maxexp > 1024:
+        assert _normalize(np.longdouble("1e400")) is None
+        assert _normalize(np.longdouble("-1e400")) is None
+
+
+def test_normalize_preserves_standard_numpy_scalars_and_handles_clongdouble():
+    assert _normalize(np.int64(7)) == 7
+    assert type(_normalize(np.int64(7))) is int
+    assert _normalize(np.uint8(3)) == 3
+    assert type(_normalize(np.uint8(3))) is int
+    assert _normalize(np.float32(1.5)) == 1.5
+    assert type(_normalize(np.float32(1.5))) is float
+    assert _normalize(np.float64(2.5)) == 2.5
+    assert type(_normalize(np.float64(2.5))) is float
+    assert _normalize(np.float64("nan")) is None
+    assert _normalize(np.float64("inf")) is None
+    assert _normalize(np.bool_(True)) is True
+    assert type(_normalize(np.bool_(True))) is bool
+    assert _normalize(np.clongdouble(1 + 2j)) == str(np.clongdouble(1 + 2j))

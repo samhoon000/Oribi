@@ -65,7 +65,10 @@ def temporal_gap_warnings(series: pd.Series, column_name: str, *, max_examples: 
     if len(timestamps) < _MIN_UNIQUE_TIMESTAMPS:
         return ()
 
-    deltas = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
+    try:
+        deltas = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
+    except (pd.errors.OutOfBoundsDatetime, pd.errors.OutOfBoundsTimedelta, OverflowError):
+        return ()
     ranked = Counter(deltas).most_common()
     cadence, dominant_count = ranked[0]
     if len(ranked) > 1 and ranked[1][1] == dominant_count:

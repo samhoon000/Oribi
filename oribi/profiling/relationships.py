@@ -276,7 +276,12 @@ def detect_relationships(
     with each entity mapping to one repeated group value. Column names do not
     establish a relationship.
     """
-    if len(frame) == 0 or len(frame) > max_rows or max_relationships == 0:
+    if (
+        len(frame) == 0
+        or len(frame) > max_rows
+        or max_relationships <= 0
+        or max_relationship_columns <= 0
+    ):
         return ()
     search_columns = min(max_relationship_columns, max(8, math.ceil(math.sqrt(max_relationships * 4))))
     eligible_sources = [
