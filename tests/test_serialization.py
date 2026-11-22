@@ -535,3 +535,20 @@ def test_to_context_accepts_minimum_and_numpy_integer_budgets():
         (np.int64(8000), 8000),
     ):
         assert context.to_context(max_chars=numpy_budget) == context.to_context(max_chars=python_budget)
+
+def test_markdown_renders_empty_column_names_explicitly():
+    context = inspect(pd.DataFrame({"": [1, 2, 3]}))
+    markdown = context.to_markdown()
+
+    # Empty names should have a readable Markdown-only representation.
+    assert "### (empty)" in markdown
+    assert "- **(empty)**: categorical dimension" in markdown
+
+    # Original column names must remain unchanged.
+    assert context.columns[0].name == ""
+    assert context.get_column("") is not None
+
+    # Structured exports must preserve the original empty name.
+    exported = context.to_dict()
+    assert exported["columns"][0]["name"] == ""
+    assert json.loads(context.to_json())["columns"][0]["name"] == ""
