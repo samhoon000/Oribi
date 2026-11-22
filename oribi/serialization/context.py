@@ -64,6 +64,11 @@ def _render_with_evidence(sections: Sequence[Sequence[_ContextLine]], max_chars:
     return "\n".join(rendered)
 
 
+def _compact_column_label(name: Any) -> str:
+    """Render a column label on one line for compact context only."""
+    return " ".join(str(name).split())
+
+
 def _format_aggregations(operations: Any) -> str:
     """Render aggregation names without treating a single string as a sequence."""
     if isinstance(operations, str):
@@ -92,7 +97,7 @@ def _relationship_lines(context: Any) -> list[str]:
                 )
                 strength = f"{relation.evidence_strength:.0%} uniqueness evidence; " if relation.evidence_strength is not None else ""
                 lines.append(
-                    f"- {column.name} {statement} "
+                    f"- {_compact_column_label(column.name)} {statement} "
                     f"({unique:,}/{rows:,} values distinct; {strength}{confidence})"
                 )
             elif relation.kind == "jointly_identifies_observations":
@@ -100,7 +105,9 @@ def _relationship_lines(context: Any) -> list[str]:
                 if composite_key in rendered_composite_keys:
                     continue
                 rendered_composite_keys.add(composite_key)
-                components = " + ".join((column.name, *relation.related_columns))
+                components = " + ".join(
+                    _compact_column_label(part) for part in (column.name, *relation.related_columns)
+                )
                 evidence = relation.evidence[0].statement if relation.evidence else "observed joint uniqueness"
                 strength = f"{relation.evidence_strength:.0%} uniqueness evidence; " if relation.evidence_strength is not None else ""
                 lines.append(
@@ -120,26 +127,26 @@ def _relationship_lines(context: Any) -> list[str]:
                         f"non-missing observations; average {card.average_records_per_value:.2f} observations/value"
                     )
                 if relation.related_columns:
-                    detail += f"; maps observations to {', '.join(relation.related_columns)}"
+                    detail += f"; maps observations to {', '.join(_compact_column_label(part) for part in relation.related_columns)}"
                 strength = f"; {relation.evidence_strength:.0%} evidence strength" if relation.evidence_strength is not None else ""
                 lines.append(
-                    f"- {column.name} groups observations ({detail}{strength}; {confidence})"
+                    f"- {_compact_column_label(column.name)} groups observations ({detail}{strength}; {confidence})"
                 )
             elif relation.kind == "measure_at_grain":
                 grain = (
-                    " + ".join(relation.related_columns)
+                    " + ".join(_compact_column_label(part) for part in relation.related_columns)
                     if relation.related_columns
                     else "the observed record grain"
                 )
                 evidence = relation.evidence[0].statement if relation.evidence else "numeric observations"
                 lines.append(
-                    f"- {column.name} is a quantitative measure at {grain} "
+                    f"- {_compact_column_label(column.name)} is a quantitative measure at {grain} "
                     f"({evidence}; {confidence})"
                 )
             elif relation.kind == "temporal_attribute":
                 evidence = relation.evidence[0].statement if relation.evidence else "datetime-typed values"
                 lines.append(
-                    f"- {column.name} is a temporal attribute associated with observations "
+                    f"- {_compact_column_label(column.name)} is a temporal attribute associated with observations "
                     f"({evidence}; {confidence})"
                 )
 
@@ -155,14 +162,14 @@ def _relationship_lines(context: Any) -> list[str]:
         if relation.kind == "one_to_one":
             evidence = relation.evidence[0].statement if relation.evidence else "observed value mapping"
             lines.append(
-                f"- {relation.source_column} ↔ {relation.target_column}: observed one-to-one value mapping "
+                f"- {_compact_column_label(relation.source_column)} ↔ {_compact_column_label(relation.target_column)}: observed one-to-one value mapping "
                 f"({evidence}; {relation.coverage:.0%} coverage; {relation.confidence:.0%} confidence)"
             )
         else:
             evidence = relation.evidence[0].statement if relation.evidence else "observed value mapping"
             if relation.kind == "approximate_mapping":
                 lines.append(
-                    f"- {relation.source_column} → {relation.target_column}: approximate mapping only "
+                    f"- {_compact_column_label(relation.source_column)} → {_compact_column_label(relation.target_column)}: approximate mapping only "
                     f"({relation.affected_groups} conflicting groups; {relation.violation_count} violations; "
                     f"{relation.missing_pair_count} incomplete rows; {relation.coverage:.0%} group coverage)"
                 )
@@ -170,7 +177,7 @@ def _relationship_lines(context: Any) -> list[str]:
             if relation.mapping_cardinality:
                 evidence = f"{relation.mapping_cardinality.replace('_', '-')}; {evidence}"
             lines.append(
-                f"- {relation.source_column} → {relation.target_column}: observed functional dependency "
+                f"- {_compact_column_label(relation.source_column)} → {_compact_column_label(relation.target_column)}: observed functional dependency "
                 f"({evidence}; {relation.coverage:.0%} coverage; {relation.confidence:.0%} confidence)"
             )
     return lines if len(lines) > 1 else []
@@ -190,7 +197,7 @@ def _column_role_lines(context: Any) -> list[_ContextLine]:
     lines: list[_ContextLine] = ["COLUMN ROLES"]
     for column in sorted(context.columns, key=lambda item: item.name):
         role = labels.get(column.semantic.role, column.semantic.role)
-        line = f"- {column.name}: {role} ({column.semantic.confidence:.0%} confidence)"
+        line = f"- {_compact_column_label(column.name)}: {role} ({column.semantic.confidence:.0%} confidence)"
         basis = next((
             evidence.statement for evidence in column.semantic.evidence
             if evidence.code in {"iso_temporal_values", "temporal_object_values"}
@@ -205,7 +212,7 @@ def _cardinality_lines(context: Any) -> list[_ContextLine]:
         card = column.cardinality
         if card is None:
             continue
-        line = f"- {column.name}: {card.unique_count:,} unique / {card.row_count:,} rows"
+        line = f"- {_compact_column_label(column.name)}: {card.unique_count:,} unique / {card.row_count:,} rows"
         if card.uniqueness_ratio is None:
             line += "; no observed values"
         else:
@@ -284,7 +291,7 @@ def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = Fa
 
     grain_lines = ["GRAIN"]
     if context.grain and context.grain.status == "estimated":
-        grain_columns = " + ".join(context.grain.columns) or context.grain.label or "Unknown"
+        grain_columns = " + ".join(_compact_column_label(part) for part in context.grain.columns) or context.grain.label or "Unknown"
         if len(context.grain.columns) > 1:
             description = "candidate composite observation grain"
         elif any(column.name in context.grain.columns and column.logical_type == "temporal" for column in context.columns):
@@ -307,7 +314,7 @@ def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = Fa
             column = next((c for c in context.columns if warning in c.warnings), None)
             if column is None:
                 continue
-            message = f"\u26a0 {column.name} \u00b7 {column.statistics.missing_rate:.0%} missing"
+            message = f"\u26a0 {_compact_column_label(column.name)} \u00b7 {column.statistics.missing_rate:.0%} missing"
         else:
             message = f"\u26a0 {warning.message}"
         if warning.evidence:
@@ -325,9 +332,10 @@ def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = Fa
             rec for rec in col.recommendations
             if rec.disposition in {"recommended", "caution"}
         ]
+        label = _compact_column_label(col.name)
         fields: list[_ContextLine] = [
             "",
-            col.name,
+            label,
             f"{col.dtype} \u00b7 {col.semantic.role} \u00b7 {col.semantic.confidence:.0%} confidence",
         ]
         stats = f"Missing {s.missing_rate:.0%} \u00b7 Unique {s.distinct_count:,}"
@@ -364,7 +372,7 @@ def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = Fa
             if inappropriate:
                 operations_line = f"{operations_line} | {inappropriate_line}" if operations_line else inappropriate_line
             guidance.append((bool(inappropriate) or any(rec.disposition == "caution" for rec in aggregations),
-                             f"- {col.name}: {operations_line}"))
+                             f"- {label}: {operations_line}"))
         optional_values = ""
         if include_values and col.categories is not None:
             optional_values = "\n" + format_categories(col.categories, s.distinct_count)
@@ -415,7 +423,7 @@ def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = Fa
 
     add_section(grain_lines[0], grain_lines[1:])
     add_section("COLUMNS", [
-        f"- {col.name}: {col.dtype}/{col.semantic.role}"
+        f"- {_compact_column_label(col.name)}: {col.dtype}/{col.semantic.role}"
         + (f" · {col.statistics.missing_rate:.0%} missing" if col.statistics.missing_count else "")
         for col in ranked
     ])

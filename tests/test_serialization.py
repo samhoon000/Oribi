@@ -337,6 +337,23 @@ def test_markdown_renders_column_names_as_literal_text():
     assert "### order_id" in markdown
     assert r"order\_id" not in markdown
 
+def test_compact_context_keeps_multiline_column_labels_on_one_line():
+    name = "Delivery\nWarehouse"
+    frame = pd.DataFrame({name: range(8), "region": list("aabbccdd")})
+    context = inspect(frame)
+    for budget in (8000, 200):
+        report = context.to_context(max_chars=budget)
+        assert "Delivery\nWarehouse" not in report
+        assert "Delivery Warehouse" in report
+        assert "region" in report
+        assert len(report) <= budget
+    assert context.get_column(name).name == name
+    exported = context.to_dict()
+    column_names = [column["name"] for column in exported["columns"]]
+    assert name in column_names
+    assert json.loads(context.to_json()) == exported
+
+
 @pytest.mark.parametrize("tz", [None, "UTC"])
 def test_compact_context_preserves_nanosecond_ranges_near_midnight(tz):
     stamps = pd.date_range("2026-01-01 00:00:00.000000001", periods=2, freq="ns", tz=tz)
