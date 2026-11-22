@@ -13,6 +13,26 @@ def test_large_integer_bounds_keep_exact_precision():
     assert statistics["maximum"] == values[1]
 
 
+@pytest.mark.parametrize("dtype,base", [("Int64", -(2**63)), ("UInt64", 2**63)])
+def test_nullable_integer_skew_with_large_adjacent_values(dtype, base):
+    values = pd.Series([base + 1, base + 2, base + 3], dtype=dtype)
+    statistics = inspect(pd.DataFrame({"amount": values})).get_column("amount").statistics
+
+    assert int(statistics.minimum) == base + 1
+    assert int(statistics.maximum) == base + 3
+    # Older pandas returns zero when the three integers round to the same float.
+    skew = values.skew()
+    assert statistics.skewness == (None if pd.isna(skew) else skew)
+
+
+def test_nullable_integer_finite_skew_preserves_warning():
+    values = pd.Series([1, 2, 3, 4, 5, 6, 7, 100], dtype="Int64")
+    column = inspect(pd.DataFrame({"amount": values})).get_column("amount")
+
+    assert column.statistics.skewness == pytest.approx(values.skew())
+    assert any(w.code == "high_skew" for w in column.warnings)
+
+
 @pytest.mark.parametrize("values,mean", [([1, 2, 3, pd.NA], 2.0), ([1.5, 2.5, pd.NA], 2.0), ([1, 3.0, pd.NA], 2.0)])
 def test_numeric_object_values_with_missing_data_are_profiled(values, mean):
     column = inspect(pd.DataFrame({"amount": pd.Series(values, dtype=object)})).columns[0]

@@ -159,9 +159,7 @@ def profile_column(
                     if len(finite) else {}
                 )
             if len(finite) >= 3 and finite.nunique() > 1:
-                skew_raw: Any = finite.skew()
-                skew = float(skew_raw)
-                values["skewness"] = skew if pd.notna(skew) else None
+                values["skewness"] = finite_or_none(finite.skew())
     elif obs.logical_type == "temporal" and len(non_null):
         values["minimum"] = non_null.min()
         values["maximum"] = non_null.max()
