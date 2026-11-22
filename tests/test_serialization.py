@@ -569,6 +569,41 @@ def test_markdown_renders_empty_column_names_explicitly():
     assert exported["columns"][0]["name"] == ""
     assert json.loads(context.to_json())["columns"][0]["name"] == ""
 
+
+def test_markdown_renders_empty_column_names_in_grain():
+    frame = pd.DataFrame({
+        "": ["A", "B", "C"],
+        "region": ["East", "West", "North"],
+    })
+    context = inspect(frame)
+
+    estimated_grain = replace(
+        context.grain,
+        status="estimated",
+        columns=("",),
+        confidence=0.9,
+    )
+    context = replace(context, grain=estimated_grain)
+
+    markdown = context.to_markdown()
+
+    assert "**(empty)** · candidate observation grain" in markdown
+
+
+def test_markdown_renders_empty_column_names_in_relationships():
+    frame = pd.DataFrame({
+        "": ["A", "A", "B", "B"],
+        "region": ["East", "East", "West", "West"],
+        "amount": [10, 20, 30, 40],
+    })
+    context = inspect(frame)
+
+    markdown = context.to_markdown()
+
+    assert "- **(empty)** groups observations" in markdown
+    assert "- **(empty) → region: one_to_one**" in markdown
+
+
 def _frame_with_two_temporal_gaps(extra=None):
     import pandas as pd
 
