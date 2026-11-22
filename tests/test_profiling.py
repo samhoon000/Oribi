@@ -105,6 +105,22 @@ def test_irregular_series_does_not_generate_gap_warning():
     assert warnings == []
 
 
+@pytest.mark.parametrize(
+    ("cadence", "last_delta", "expected_missing"),
+    [(1, 2**53 + 1, [2**53]), (2, 2**54 + 1, [])],
+    ids=["exact-multiple", "non-multiple"],
+)
+def test_temporal_gap_warning_uses_exact_interval_arithmetic(cadence, last_delta, expected_missing):
+    offsets = [0, cadence, 2 * cadence, 3 * cadence, 3 * cadence + last_delta]
+    context, _, _ = _temporal_warnings(pd.to_datetime(offsets, unit="ns"))
+    missing = [
+        warning.evidence[0].details["missing_intervals"]
+        for warning in context.warnings
+        if warning.code == "potential_temporal_gap"
+    ]
+    assert missing == expected_missing
+
+
 def test_duplicates_do_not_distort_cadence_and_gap():
     _, column, warnings = _temporal_warnings(["2026-01-01", "2026-01-01", "2026-01-02", "2026-01-03", "2026-01-05", "2026-01-05"])
     assert len(warnings) == 1

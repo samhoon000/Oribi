@@ -78,10 +78,11 @@ def temporal_gap_warnings(series: pd.Series, column_name: str, *, max_examples: 
 
     steps_by_interval: list[int] = []
     for delta in deltas:
-        steps = delta / cadence
-        if steps < 1 or steps != int(steps):
+        # True division rounds large ratios and can hide a nonzero remainder.
+        steps, remainder = divmod(delta, cadence)
+        if steps < 1 or remainder != pd.Timedelta(0):
             return ()
-        steps_by_interval.append(int(steps))
+        steps_by_interval.append(steps)
     if not any(steps > 1 for steps in steps_by_interval):
         return ()
 
