@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from oribi import MetricDefinition, RelationshipContext, inspect
-from oribi.reasoning.metrics import infer_metrics
+from oribi.reasoning.metrics import _sql_col, infer_metrics
 
 
 def _metric(context, name):
@@ -425,3 +425,42 @@ def test_infer_metrics_guards_one_to_many_when_child_belongs_to_multiple_parents
     assert "CASE WHEN parent_id IS NOT NULL THEN child_id END" in missing_ratio.sql
     assert any("missing parent_id" in c.lower() for c in missing_ratio.caveats)
     assert _eval_sql(missing_parent_frame, missing_ratio.sql) == pytest.approx(2.0)
+
+
+def test_sql_keywords_used_as_metric_columns_are_quoted():
+    df = pd.DataFrame(
+        {
+            "order_id": [1, 2, 3, 4],
+            "select": [11.5, 25.5, 40.5, 51.5],
+        }
+    )
+    metric = next(m for m in inspect(df).metrics if m.name == "total_select")
+    assert metric.sql == 'SUM("select")'
+    assert _eval_sql(df, metric.sql) == pytest.approx(129.0)
+
+
+def test_sql_keywords_case_insensitive_quoting():
+    for col_name in ("SELECT", "Select", "where", "GROUP"):
+        df = pd.DataFrame(
+            {
+                "id": [1, 2, 3, 4],
+                col_name: [10.0, 20.0, 30.0, 40.0],
+            }
+        )
+        ctx = inspect(df)
+        metric = next(m for m in ctx.metrics if m.columns == (col_name,))
+        assert metric.sql == f'SUM("{col_name}")'
+        assert _eval_sql(df, metric.sql) == pytest.approx(100.0)
+
+
+def test_sql_col_formatting_with_keywords_and_identifiers():
+    assert _sql_col("order_id") == "order_id"
+    assert _sql_col("revenue") == "revenue"
+    assert _sql_col("select") == '"select"'
+    assert _sql_col("SELECT") == '"SELECT"'
+    assert _sql_col("Select") == '"Select"'
+    assert _sql_col("where") == '"where"'
+    assert _sql_col("group") == '"group"'
+    assert _sql_col("order") == '"order"'
+    assert _sql_col("col with space") == '"col with space"'
+    assert _sql_col('col"quote') == '"col""quote"'
