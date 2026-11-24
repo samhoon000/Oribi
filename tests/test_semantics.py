@@ -12,6 +12,40 @@ def test_roles_have_evidence(sales_frame):
     assert roles["order_id"].evidence
 
 
+@pytest.mark.parametrize(("dtype", "values", "missing_count", "evidence_code"), [
+    ("object", [True, False, None, True], 1, "boolean_values"),
+    ("bool", [True, False, True, False], 0, "boolean_dtype"),
+    ("boolean", [True, False, None, True], 1, "boolean_dtype"),
+])
+def test_boolean_flags_keep_stored_dtype(dtype, values, missing_count, evidence_code):
+    import pandas as pd
+
+    frame = pd.DataFrame({"is_active": pd.Series(values, dtype=dtype)})
+    original = frame.copy()
+    column = inspect(frame).get_column("is_active")
+
+    assert column.dtype == dtype
+    assert column.logical_type == column.semantic.role == "boolean"
+    assert column.statistics.missing_count == missing_count
+    codes = {e.code for e in column.semantic.evidence}
+    assert codes & {"boolean_dtype", "boolean_values"} == {evidence_code}
+    pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize("values", [
+    pytest.param([True, False, None, True, "true"], id="bool-string"),
+    pytest.param([True, False, None, True, 1], id="bool-int"),
+    pytest.param([None, None], id="all-missing"),
+])
+def test_object_flags_without_a_boolean_domain_remain_unknown(values):
+    import pandas as pd
+
+    frame = pd.DataFrame({"is_active": pd.Series(values, dtype=object)})
+    column = inspect(frame).get_column("is_active")
+
+    assert column.logical_type == column.semantic.role == "unknown"
+
+
 def test_numeric_low_cardinality_can_be_dimension():
     context = inspect(__import__("pandas").DataFrame({"rating": [1, 2, 1, 3, 2]}))
     assert context.columns[0].semantic.role == "dimension"
@@ -292,6 +326,45 @@ def test_camelcase_and_acronym_identifier_names():
     assert column_name_words("revenue_bucket_version_3") == ["revenue", "bucket"]
     assert column_name_words("profit_rank_v3") == ["profit", "rank"]
     assert column_name_words("sales_category_code_v1") == ["sales", "category", "code"]
+
+
+@pytest.mark.parametrize("categorical", [False, True], ids=["native", "categorical"])
+def test_distinct_interval_bins_recommend_grouping_without_entity_metrics(categorical):
+    import pandas as pd
+
+    bins = pd.arrays.IntervalArray.from_breaks([0, 10, 20, 30])
+    values = pd.Categorical(bins) if categorical else bins
+    frame = pd.DataFrame({"price_band": values})
+    expected = frame.copy()
+
+    context = inspect(frame)
+    column = context.get_column("price_band")
+
+    assert column.dtype == str(values.dtype)
+    assert column.logical_type == column.semantic.role == "categorical"
+    assert "categorical_dtype" in {e.code for e in column.semantic.evidence}
+    advice = {(rec.operation, rec.disposition) for rec in column.recommendations}
+    assert ("GROUP BY", "recommended") in advice
+    assert ("COUNT DISTINCT", "useful") in advice
+    assert not context.metrics
+    pd.testing.assert_frame_equal(frame, expected)
+
+
+@pytest.mark.parametrize("categorical", [False, True], ids=["native", "categorical"])
+def test_repeated_interval_bins_count_only_observed_non_missing_values(categorical):
+    import pandas as pd
+
+    bins = pd.IntervalIndex.from_breaks([0.0, 10.0, 20.0, 30.0], closed="left")
+    labels = [bins[1], bins[0], None, bins[0]]
+    values = pd.Categorical(labels, categories=bins) if categorical else pd.arrays.IntervalArray(labels)
+    column = inspect(pd.DataFrame({"price_band": values})).get_column("price_band")
+
+    assert column.dtype == str(values.dtype)
+    assert column.statistics.missing_count == 1
+    assert column.statistics.distinct_count == 2
+    assert column.categories is not None
+    assert column.categories.values == ((bins[0], 2), (bins[1], 1))
+    assert column.categories.is_complete
 
 
 def test_distinct_period_column_gets_temporal_role_without_becoming_identifier_or_grain():

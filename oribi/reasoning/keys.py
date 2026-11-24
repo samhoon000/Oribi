@@ -26,9 +26,9 @@ def detect_candidate_keys(
 ) -> tuple[KeyCandidate, ...]:
     """Collect qualifying single and bounded pair candidates.
 
-    Pair search considers at most ``max_columns`` non-unique, non-measure
-    columns (28 pairs at the default limit of eight). It runs at or below
-    ``max_exact_rows`` and retains all qualifying candidates in the searched set.
+    Pair search skips verified single keys but allows near-unique singles.
+    It considers at most ``max_columns`` eligible columns (28 pairs by
+    default) at or below ``max_exact_rows`` and retains all qualifying pairs.
     """
     row_count = len(frame)
     if row_count == 0:
@@ -66,12 +66,14 @@ def detect_candidate_keys(
                 verified,
             ))
 
-    # A component already qualifying alone adds no useful composite candidate.
-    single_columns = {candidate.columns[0] for candidate in single_candidates}
+    verified_single_columns = {
+        candidate.columns[0] for candidate in single_candidates if candidate.verified_unique
+    }
     potential = sorted(
         (
             name for name in names
-            if name not in single_columns
+            if name not in verified_single_columns
+            and (exact_distinct is None or exact_distinct.get(name, True))
             and _is_key_component(roles.get(name))
             and getattr(frame[name].dtype, "kind", None) != "m"
             and stats[name].distinct_count > 1

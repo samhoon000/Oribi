@@ -531,14 +531,20 @@ def detect_metric_grain_facts(
     *,
     max_rows: int = 100_000,
     max_columns: int = 40,
-) -> tuple[frozenset[tuple[str, str]], frozenset[tuple[str, str]], frozenset[tuple[str, str]]]:
+) -> tuple[
+    frozenset[tuple[str, str]],
+    frozenset[tuple[str, str]],
+    frozenset[tuple[str, str]],
+    frozenset[str],
+]:
     """Collect entity-grain measure constancy, determinant, and multi-parent facts.
 
-    Returns ``(entity_constant_measures, entity_determinants, multi_parent_pairs)``.
+    Also returns the names of measures that repeat under an incomplete
+    determinant, so losing the determinant cannot trigger a raw sum.
     """
     row_count = len(frame)
     if row_count == 0 or row_count > max_rows or max_columns <= 0:
-        return frozenset(), frozenset(), frozenset()
+        return frozenset(), frozenset(), frozenset(), frozenset()
 
     identifiers = sorted(
         (
@@ -567,6 +573,7 @@ def detect_metric_grain_facts(
     )[:max_columns]
 
     entity_constant_measures: set[tuple[str, str]] = set()
+    partially_covered_measures: set[str] = set()
     for entity_col in repeating_ids:
         for measure_col in additive_measures:
             try:
@@ -586,7 +593,10 @@ def detect_metric_grain_facts(
             except (TypeError, ValueError):
                 continue
             if not distinct_per_entity.empty and int(distinct_per_entity.max()) == 1:
-                entity_constant_measures.add((entity_col.name, measure_col.name))
+                if len(paired) == _col_observed_count(measure_col, row_count):
+                    entity_constant_measures.add((entity_col.name, measure_col.name))
+                else:
+                    partially_covered_measures.add(measure_col.name)
 
     entity_determinants: set[tuple[str, str]] = set()
     determinant_names = sorted({entity_name for entity_name, _ in entity_constant_measures})
@@ -633,4 +643,5 @@ def detect_metric_grain_facts(
         frozenset(entity_constant_measures),
         frozenset(entity_determinants),
         frozenset(multi_parent_pairs),
+        frozenset(partially_covered_measures),
     )

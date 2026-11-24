@@ -84,6 +84,18 @@ def test_cardinality_excludes_missing_values_but_keeps_total_rows():
     assert (card.minimum_records_per_value, card.maximum_records_per_value) == (1, 2)
 
 
+def test_cardinality_excludes_unused_categorical_levels():
+    frame = pd.DataFrame({
+        "region": pd.Categorical(["east", "east", None], categories=["east", "west"]),
+    })
+    column = inspect(frame, options=ProfileOptions(top_k=0)).get_column("region")
+    card = column.cardinality
+
+    assert column.statistics.distinct_count == card.unique_count == 1
+    assert card.observed_count == 2
+    assert (card.minimum_records_per_value, card.maximum_records_per_value) == (2, 2)
+
+
 def test_empty_and_single_row_cardinality_are_defined():
     empty = inspect(pd.DataFrame({"id": pd.Series(dtype="int64")}))
     empty_card = _column(empty, "id").cardinality
@@ -128,6 +140,21 @@ def test_bijective_value_mapping_can_show_one_to_one_with_uncertainty():
     assert relation.semantic_confidence == relation.confidence
     assert relation.confidence_components["mapping_coverage"] == 1.0
     assert len([rel for rel in context.relationships if rel.kind == "one_to_one"]) == 1
+
+
+def test_unhashable_metadata_does_not_displace_directional_mapping():
+    frame = pd.DataFrame({
+        "region": ["east", "east", "west", "west"],
+        "store": ["s1", "s1", "s2", "s2"],
+        "a_metadata": pd.Series([[1], "[1]", [2], "[2]"], dtype=object),
+    })
+    context = inspect(frame, options=ProfileOptions(max_relationship_columns=2))
+
+    assert [(rel.source_column, rel.target_column, rel.kind) for rel in context.relationships] == [
+        ("region", "store", "functional_dependency"),
+        ("region", "store", "one_to_one"),
+    ]
+    assert "region ↔ store" in context.to_context()
 
 
 def test_missing_entity_value_cannot_establish_exact_one_to_many():
@@ -181,6 +208,19 @@ def test_one_to_many_group_budget_skips_sparse_unique_identifiers():
 
     assert [(rel.source_column, rel.target_column, rel.kind) for rel in context.relationships] == [
         ("customer_id", "order_id", "one_to_many"),
+    ]
+
+
+def test_unhashable_metadata_does_not_displace_one_to_many_group():
+    frame = pd.DataFrame({
+        "region": ["east", "east", "east", "west", "west", "west"],
+        "item_id": [1, 2, 3, 4, 5, 6],
+        "a_metadata": pd.Series([[1], "[1]", [2], "[2]", [3], "[3]"], dtype=object),
+    })
+    context = inspect(frame, options=ProfileOptions(max_relationship_columns=1))
+
+    assert [(rel.source_column, rel.target_column, rel.kind) for rel in context.relationships] == [
+        ("region", "item_id", "one_to_many"),
     ]
 
 

@@ -61,6 +61,7 @@ class ProfileOptions:
 
 
 def _profile_index(df: pd.DataFrame) -> IndexContext | None:
+    """Measure index labels, comparing unhashable object labels by value."""
     index = df.index
     default = isinstance(index, pd.RangeIndex) and index.name is None and index.start == 0 and index.step == 1
     if default:
@@ -76,6 +77,12 @@ def _profile_index(df: pd.DataFrame) -> IndexContext | None:
     try:
         unique = int(index.nunique()) if index.nlevels == 1 else int(len(index.unique()))
     except (TypeError, ValueError):
+        if index.nlevels == 1 and pd.api.types.is_object_dtype(index.dtype):
+            # Series can compare unhashable labels without the Index's hash table.
+            distinct = index_frame.iloc[:, 0].drop_duplicates()
+            unique = int(distinct.notna().sum())
+            duplicates = len(index) - len(distinct)
+            return IndexContext(names, dtypes, 1, unique, duplicates, missing, duplicates == 0)
         unique = int(len(index.drop_duplicates()))
     # unique_count leaves missing entries out for a single-level index, so
     # len(index) - unique would count each missing entry as a duplicate.
@@ -94,6 +101,8 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
     The returned context contains no reference to ``df``. Sampled built-in lists
     and dictionaries are copied, including those nested within them. Temporal
     role inference for string or object columns preserves their stored values.
+    Fallback distinct counts describe a column without qualifying it for key
+    searches, cross-column relationship scans, or SQL metrics.
     """
     if options is None:
         options = ProfileOptions()
@@ -128,6 +137,8 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
             statistics,
             nrows,
             has_fractional_values=has_fractional_values,
+            is_bool_dtype=pd.api.types.is_bool_dtype(observations[name].series.dtype),
+            is_decimal=observations[name].is_decimal,
             is_float=pd.api.types.is_float_dtype(observations[name].series.dtype),
             date_evidence=observations[name].date_evidence,
         )
@@ -139,18 +150,19 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
         name: semantics[name].role for name in names
         if observations[name].date_evidence is None
     }
+    exact_distinct = {name: obs.distinct_count_exact for name, obs in observations.items()}
     key_candidates, grain = detect_keys(
         df, names, stats, structural_roles,
         max_columns=options.max_key_columns, max_exact_rows=options.max_exact_rows,
-        exact_distinct={name: observations[name].distinct_count_exact for name in names},
+        exact_distinct=exact_distinct,
     )
     cardinalities = {
-        name: profile_cardinality(observations[name].series, nrows)
-        for name in names
+        name: profile_cardinality(obs.series, nrows, obs.fallback_counts)
+        for name, obs in observations.items()
     }
     relationships = detect_relationships(
         df,
-        structural_roles,
+        {name: role for name, role in structural_roles.items() if exact_distinct[name]},
         max_rows=options.max_exact_rows,
         candidate_keys=key_candidates,
         grain=grain,
@@ -202,15 +214,21 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
             "duplicate_check_unavailable", "low", "Duplicate-row check unavailable",
             "Pandas could not compare rows with the available cell values.",
         ))
-    entity_constant_measures, entity_determinants, multi_parent_pairs = detect_metric_grain_facts(
+    metric_columns = [column for column in columns if exact_distinct[column.name]]
+    (
+        entity_constant_measures,
+        entity_determinants,
+        multi_parent_pairs,
+        partially_covered_measures,
+    ) = detect_metric_grain_facts(
         df,
-        columns,
+        metric_columns,
         relationships,
         max_rows=options.max_exact_rows,
         max_columns=options.max_relationship_columns,
     )
     metrics = infer_metrics(
-        columns,
+        metric_columns,
         grain=grain,
         relationships=relationships,
         row_count=nrows,
@@ -218,6 +236,7 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
         entity_constant_measures=entity_constant_measures,
         entity_determinants=entity_determinants,
         multi_parent_pairs=multi_parent_pairs,
+        partially_covered_measures=partially_covered_measures,
     )
     return DatasetContext(
         profile=DatasetProfile(

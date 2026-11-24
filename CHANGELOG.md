@@ -12,6 +12,10 @@ All notable changes to Oribi are recorded here.
 - Provide explicit starting-point rationale for SUM and MEAN on numeric measures while preserving cautions for negative values and skew.
 - Surface inappropriate aggregation guidance and useful operations (such as COUNT DISTINCT on categorical columns or MEDIAN on measures) in Markdown and compact context reports.
 
+### Fixed
+
+- Detach mutable list and dictionary values nested inside tuple samples when snapshotting top values, so editing the source data after inspection no longer changes an already-captured context.
+
 ## 0.2.0 — 2026-11-19
 
 ### Compatibility

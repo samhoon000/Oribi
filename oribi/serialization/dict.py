@@ -63,14 +63,17 @@ def _normalize(
         _active.add(id(value))
         try:
             result = {}
-            for key, item in value.items():
+            for index, (key, item) in enumerate(value.items()):
                 if evidence_details and not include_values and isinstance(item, str):
                     continue
                 if evidence_details and not include_values and isinstance(item, (tuple, list)) and any(isinstance(v, str) for v in item):
                     continue
-                result[str(key)] = _normalize(
+                normalized_key = str(key)
+                if include_values and normalized_key in result:
+                    raise ValueError(f"Cannot export duplicate stringified mapping key at '{_path}'.")
+                result[normalized_key] = _normalize(
                     item, include_values, evidence_details=evidence_details,
-                    _active=_active, _path=f"{_path}[{key!r}]",
+                    _active=_active, _path=f"{_path}[{index}]",
                 )
             return result
         finally:

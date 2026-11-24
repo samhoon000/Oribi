@@ -232,6 +232,23 @@ def test_inspect_snapshots_mutable_top_values(new_value, mutate):
     assert context.to_context(include_values=True) == compact_before
 
 
+def test_snapshot_detaches_mutable_values_inside_tuple_samples():
+    from oribi.profiling.columns import _snapshot_top_value
+
+    inner = [10]
+    snapshot = _snapshot_top_value((inner,), {})
+    inner.append(20)
+    # A tuple is immutable but can carry a mutable list; the snapshot must hold
+    # a detached copy, so the later edit does not reach into it.
+    assert snapshot == ([10],)
+
+    # A list reused inside the same tuple keeps its shared identity in the copy.
+    shared = [0]
+    reused = _snapshot_top_value((shared, shared), {})
+    assert reused[0] == [0]
+    assert reused[0] is reused[1]
+
+
 def test_inspect_preserves_cycles_and_shared_items_in_a_snapshot():
     import pandas as pd
 

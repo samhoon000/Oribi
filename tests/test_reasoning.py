@@ -284,6 +284,33 @@ def test_non_additive_measures_render_their_restrictions(name):
         assert "check weighting and denominators before averaging" in rendered
 
 
+@pytest.mark.parametrize(
+    "name", ["unit_price", "unit_cost", "unitPrice", "unitCost", "retail_unit_price_usd", "price_per_unit"]
+)
+def test_per_unit_measures_get_non_additive_guidance(name):
+    context = inspect(pd.DataFrame({name: [1.25, 2.75, 3.1, 4.5]}))
+    ops = {rec.operation: rec.disposition for rec in context.get_column(name).recommendations}
+    assert ops["SUM"] == "not_applicable"
+    assert ops["MEAN"] == "caution"
+    assert not any(metric.kind == "measure_total" and name in metric.columns for metric in context.metrics)
+
+
+@pytest.mark.parametrize(
+    ("name", "values"),
+    [
+        ("units_sold", [12, 7, 15, 20, 7, 17, 14, 11]),
+        ("cost_by_unit", [1.25, 2.75, 3.1, 4.5]),
+        ("price_unit", [1.25, 2.75, 3.1, 4.5]),
+    ],
+)
+def test_nonmatching_unit_columns_stay_additive(name, values):
+    context = inspect(pd.DataFrame({name: values}))
+    ops = {rec.operation: rec.disposition for rec in context.get_column(name).recommendations}
+    assert ops["SUM"] == "recommended"
+    assert ops["MEAN"] == "recommended"
+    assert any(metric.kind == "measure_total" and metric.columns == (name,) for metric in context.metrics)
+
+
 def test_pipeline_renders_composite_grain_and_measure_conditions():
     rows = 36
     frame = pd.DataFrame({

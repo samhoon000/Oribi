@@ -1,10 +1,59 @@
 import warnings
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from oribi import ProfileOptions, inspect
+
+
+@pytest.mark.parametrize("repeat", [1, 2])
+def test_decimal_prices_have_numeric_statistics_and_measure_semantics(repeat):
+    values = [Decimal("1.01"), Decimal("2.02"), Decimal("3.03")]
+    frame = pd.DataFrame({"price": pd.Series(values * repeat + [None], dtype=object)})
+    original = frame.copy()
+    column = inspect(frame).get_column("price")
+    stats = column.statistics
+
+    assert column.dtype == "object"
+    assert column.logical_type == "numeric"
+    assert column.semantic.role == "measure"
+    assert any(e.code == "decimal_values" for e in column.semantic.evidence)
+    assert stats.missing_count == 1
+    assert stats.distinct_count == 3
+    assert stats.minimum == pytest.approx(1.01)
+    assert stats.maximum == pytest.approx(3.03)
+    assert stats.mean == pytest.approx(2.02)
+    assert stats.median == pytest.approx(2.02)
+    assert stats.quantiles["0.5"] == pytest.approx(2.02)
+    assert dict(stats.top_values) == dict.fromkeys(values, repeat)
+    pd.testing.assert_frame_equal(frame, original)
+    assert all(type(value) is Decimal for value in frame["price"].dropna())
+
+
+def test_decimal_numeric_moments_exclude_infinities():
+    series = pd.Series(
+        [Decimal("-Infinity"), Decimal("1.5"), Decimal("2.5"), Decimal("Infinity"), Decimal("NaN")],
+        dtype=object,
+    )
+    column = inspect(pd.DataFrame({"price": series})).get_column("price")
+
+    assert column.logical_type == "numeric"
+    assert column.statistics.missing_count == 1
+    assert column.statistics.minimum == pytest.approx(1.5)
+    assert column.statistics.maximum == pytest.approx(2.5)
+    assert column.statistics.mean == pytest.approx(2.0)
+
+
+def test_mixed_decimal_and_numeric_string_stays_non_numeric():
+    series = pd.Series([Decimal("1.01"), "2.02", None], dtype=object)
+    column = inspect(pd.DataFrame({"price": series})).get_column("price")
+
+    assert column.logical_type == "unknown"
+    assert column.semantic.role != "measure"
+    assert column.statistics.mean is None
+    assert column.statistics.missing_count == 1
 
 
 def test_large_integer_bounds_keep_exact_precision():
@@ -220,6 +269,39 @@ def test_high_cardinality_categorical_column_has_warning():
     group = context.columns[0]
     assert group.logical_type == "categorical"
     assert any(w.code == "high_cardinality_category" for w in group.warnings)
+
+
+@pytest.mark.parametrize("top_k", [0, 4])
+def test_unhashable_object_distinct_count_matches_cardinality(top_k):
+    values = pd.Series([[1], "[1]", [2], "[2]"], dtype=object)
+    context = inspect(pd.DataFrame({"metadata": values}), options=ProfileOptions(top_k=top_k))
+    column = context.get_column("metadata")
+
+    assert column.statistics.distinct_count == column.cardinality.unique_count == 4
+    if top_k:
+        samples = column.statistics.top_values
+        assert len(samples) == 4
+        assert all(frequency == 1 for _, frequency in samples)
+        assert all(any(type(sample) is type(value) and sample == value for sample, _ in samples)
+                   for value in values)
+    else:
+        assert column.statistics.top_values == ()
+
+
+def test_unhashable_object_counts_fall_back_when_pandas_value_counts_fails(monkeypatch):
+    value_counts = pd.Series.value_counts
+
+    def reject_lists(series, *args, **kwargs):
+        if any(isinstance(value, list) for value in series):
+            raise TypeError("cannot count list values")
+        return value_counts(series, *args, **kwargs)
+
+    monkeypatch.setattr(pd.Series, "value_counts", reject_lists)
+    values = pd.Series([[1], "[1]", [2], "[2]"], dtype=object)
+    column = inspect(pd.DataFrame({"metadata": values})).get_column("metadata")
+
+    assert column.statistics.distinct_count == column.cardinality.unique_count == 2
+    assert column.statistics.top_values == ()
 
 
 def test_unused_categories_are_excluded_from_top_values():
@@ -492,3 +574,24 @@ def test_sparse_and_dense_numeric_columns_match_dense_statistics(values):
     assert actual.logical_type == "numeric"
     assert actual.statistics == expected.statistics
     assert actual.semantic == expected.semantic
+
+@pytest.mark.parametrize("top_k", [0, 4])
+def test_unhashable_object_frequency_scan_is_shared(monkeypatch, top_k):
+    value_counts = pd.Series.value_counts
+    scans = 0
+
+    def count_list_scans(series, *args, **kwargs):
+        nonlocal scans
+        if any(isinstance(value, list) for value in series):
+            scans += 1
+        return value_counts(series, *args, **kwargs)
+
+    monkeypatch.setattr(pd.Series, "value_counts", count_list_scans)
+    values = pd.Series([[1], "[1]", [2], "[2]"], dtype=object)
+    column = inspect(
+        pd.DataFrame({"metadata": values}), options=ProfileOptions(top_k=top_k),
+    ).get_column("metadata")
+
+    assert column.statistics.distinct_count == column.cardinality.unique_count == 4
+    assert len(column.statistics.top_values) == top_k
+    assert scans == 1

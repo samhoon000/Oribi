@@ -225,6 +225,9 @@ def _cardinality_lines(context: Any) -> list[_ContextLine]:
     return lines if len(lines) > 1 else []
 
 
+_DEDUP_EVIDENCE_CODE = "measure_constant_per_entity"
+
+
 def _metric_lines(context: Any) -> list[_ContextLine]:
     metrics = getattr(context, "metrics", ())
     if not metrics:
@@ -233,11 +236,20 @@ def _metric_lines(context: Any) -> list[_ContextLine]:
     for metric in metrics:
         sql = " ".join(metric.sql.splitlines())
         line = f"- {metric.name} ({metric.confidence:.0%} confidence): {sql}"
+        caveats = [" ".join(caveat.split()) for caveat in metric.caveats]
+        # SQL that deduplicates rows is only safe to use together with the caveat
+        # explaining that assumption, so both stay in the same required text.
+        dedup_caveat = None
+        if any(item.code == _DEDUP_EVIDENCE_CODE for item in metric.evidence):
+            dedup_caveat = next((c for c in caveats if "deduplicates" in c), None)
+        if dedup_caveat:
+            line += f" · Caveat: {dedup_caveat}"
+            caveats = [c for c in caveats if c != dedup_caveat]
         details = []
         if metric.rationale:
             details.append(" ".join(metric.rationale.split()))
-        if metric.caveats:
-            details.append(f"Caveat: {' '.join(metric.caveats[0].split())}")
+        if caveats:
+            details.append(f"Caveat: {caveats[0]}")
         evidence = f" · {' '.join(details)}" if details else ""
         lines.append(_OptionalText(line, evidence=evidence) if evidence else line)
     return lines

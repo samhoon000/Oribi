@@ -27,21 +27,25 @@ def _constancy_evidence(
     })
 
 
-def profile_cardinality(series: pd.Series, row_count: int) -> CardinalityContext:
+def profile_cardinality(
+    series: pd.Series, row_count: int, fallback_counts: tuple[pd.Series, bool] | None = None,
+) -> CardinalityContext:
     """Describe observed frequencies without assigning business meaning.
 
     Missing values are excluded from the frequency distribution; row_count
     still includes them so callers can see the coverage of the column.
     """
     observed = series.dropna()
-    exact_values = True
-    try:
-        counts = observed.value_counts(dropna=True, sort=False)
-    except (TypeError, ValueError):
-        # Match AnalysisSession's fallback for unhashable object values.
-        counts = observed.astype(str).value_counts(dropna=True, sort=False)
-        exact_values = False
-    counts = counts[counts > 0]
+    if fallback_counts is not None:
+        counts, exact_values = fallback_counts
+    else:
+        exact_values = True
+        try:
+            counts = observed.value_counts(dropna=True, sort=False)
+        except (TypeError, ValueError):
+            counts = observed.astype(str).value_counts(dropna=True, sort=False)
+            exact_values = False
+        counts = counts[counts > 0]
     observed_count = int(counts.sum())
     unique_count = int(len(counts))
     if not unique_count:

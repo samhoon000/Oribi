@@ -1160,6 +1160,7 @@ def infer_metrics(
     entity_constant_measures: frozenset[tuple[str, str]] = frozenset(),
     entity_determinants: frozenset[tuple[str, str]] = frozenset(),
     multi_parent_pairs: frozenset[tuple[str, str]] = frozenset(),
+    partially_covered_measures: frozenset[str] = frozenset(),
 ) -> tuple[MetricDefinition, ...]:
     """Infer conservative, evidence-backed analytical metric definitions.
 
@@ -1227,6 +1228,9 @@ def infer_metrics(
 
     frozen_constant_measures = frozenset(effective_constant_measures)
     frozen_determinants = frozenset(effective_determinants)
+    fully_covered_measures = {measure for _, measure in frozen_constant_measures}
+    ambiguous_measures = partially_covered_measures - fully_covered_measures
+    additive_measures = [col for col in additive_measures if col.name not in ambiguous_measures]
 
     candidates: list[_Candidate] = [
         *_infer_entity_counts(

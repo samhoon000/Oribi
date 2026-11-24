@@ -1,10 +1,11 @@
 import json
 import sqlite3
+from decimal import Decimal
 
 import pandas as pd
 import pytest
 
-from oribi import MetricDefinition, RelationshipContext, inspect
+from oribi import MetricDefinition, ProfileOptions, RelationshipContext, inspect
 from oribi.reasoning.metrics import _sql_col, infer_metrics
 
 
@@ -276,6 +277,71 @@ def _eval_sql(frame: pd.DataFrame, sql: str) -> float:
         return float(row[0])
 
 
+def test_decimal_measure_ratio_avoids_integer_division():
+    frame = pd.DataFrame({
+        "order_id": [1, 2],
+        "revenue": pd.Series([Decimal("1.00"), Decimal("2.00")], dtype=object),
+    })
+    metric = _metric(inspect(frame), "average_order_value")
+    # SQLite can store whole values as integers in a NUMERIC column.
+    assert _eval_sql(frame.assign(revenue=[1, 2]), metric.sql) == 1.5
+
+
+@pytest.mark.parametrize(("revenue", "profit"), [(100.0, None), (None, 40.0)])
+def test_metrics_withhold_sums_with_an_incomplete_determinant(revenue, profit):
+    frame = pd.DataFrame({
+        "order_id": pd.Series([1, 1, 2, 2, None], dtype="Int64"),
+        "revenue": [20.0, 20.0, 30.0, 30.0, revenue],
+        "profit": [2.0, 2.0, 9.0, 9.0, profit],
+    })
+    context = inspect(frame)
+    ambiguous = "revenue" if revenue is not None else "profit"
+    covered = "profit" if ambiguous == "revenue" else "revenue"
+
+    assert all(ambiguous not in metric.columns for metric in context.metrics)
+    assert _eval_sql(frame, _metric(context, f"total_{covered}").sql) == (
+        11.0 if covered == "profit" else 50.0
+    )
+
+
+@pytest.mark.parametrize("include_empty_row", [False, True])
+def test_deduplicated_metrics_only_require_keys_for_observed_measures(include_empty_row):
+    frame = pd.DataFrame({
+        "order_id": pd.Series([1, 1, 2, 2, None], dtype="Int64"),
+        "revenue": [20.0, 20.0, 30.0, 30.0, None],
+        "profit": [2.0, 2.0, 9.0, 9.0, None],
+    })
+    if not include_empty_row:
+        frame = frame.iloc[:-1]
+    context = inspect(frame)
+
+    assert _eval_sql(frame, _metric(context, "total_revenue").sql) == 50.0
+    assert _eval_sql(frame, _metric(context, "average_order_value").sql) == 25.0
+    assert _eval_sql(frame, _metric(context, "profit_margin").sql) == pytest.approx(11.0 / 50.0)
+
+
+def test_complete_determinant_can_replace_incomplete_determinant():
+    frame = pd.DataFrame({
+        "order_id": pd.Series([1, 1, 2, 2, None], dtype="Int64"),
+        "invoice_id": [11, 11, 12, 12, 13],
+        "revenue": [20.0, 20.0, 30.0, 30.0, 100.0],
+    })
+    total = _metric(inspect(frame), "total_revenue")
+
+    assert "GROUP BY invoice_id" in total.sql
+    assert _eval_sql(frame, total.sql) == 150.0
+
+
+def test_missing_entity_key_does_not_withhold_line_item_sum():
+    frame = pd.DataFrame({
+        "order_id": pd.Series([1, 1, 2, 2, None], dtype="Int64"),
+        "revenue": [20.0, 21.0, 30.0, 31.0, 100.0],
+    })
+    total = _metric(inspect(frame), "total_revenue")
+
+    assert _eval_sql(frame, total.sql) == 202.0
+
+
 def test_repeated_order_totals_across_line_items_deduplicate_aov_total_and_ratios():
     frame = pd.DataFrame(
         {
@@ -312,6 +378,25 @@ def test_repeated_order_totals_across_line_items_deduplicate_aov_total_and_ratio
     opc = _metric(context, "orders_per_customer")
     assert opc.sql == "1.0 * COUNT(DISTINCT order_id) / NULLIF(COUNT(DISTINCT customer_id), 0)"
     assert _eval_sql(frame, opc.sql) == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize(
+    "options", [ProfileOptions(max_relationship_columns=1), None], ids=["explicit", "default"],
+)
+def test_unhashable_metadata_does_not_displace_metric_grain(options):
+    # An incomplete pair keeps the exact mapping scan from supplying the same grain fact.
+    rows = pd.DataFrame({
+        "entity_id": ["e1", "e1", "e2", "e2", "e3", "e3", "e3"],
+        "amount": [10.0, 10.0, 20.0, 20.0, 30.0, 30.0, None],
+    })
+    metadata = pd.Series([[1], "[1]", [2], "[2]", [3], "[3]", "extra"], dtype=object)
+    limit = (options or ProfileOptions()).max_relationship_columns
+    metadata_columns = {f"a_metadata_{i}": metadata for i in range(limit)}
+    context = inspect(rows.assign(**metadata_columns), options=options)
+
+    total = _metric(context, "total_amount")
+    assert _eval_sql(rows, total.sql) == pytest.approx(60.0), total.sql
+    assert all(not metadata_columns.keys() & metric.columns for metric in context.metrics)
 
 
 def test_repeated_integer_order_totals_and_coarser_customer_grain_measures():
@@ -464,3 +549,38 @@ def test_sql_col_formatting_with_keywords_and_identifiers():
     assert _sql_col("order") == '"order"'
     assert _sql_col("col with space") == '"col with space"'
     assert _sql_col('col"quote') == '"col""quote"'
+
+
+def _repeated_order_revenue_frame():
+    return pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2],
+            "line_id": [1, 2, 3, 4],
+            "revenue": [20.0, 20.0, 30.0, 30.0],
+        }
+    )
+
+
+def test_compact_context_never_shows_dedup_sql_without_its_caveat():
+    context = inspect(_repeated_order_revenue_frame())
+
+    for budget in range(100, 5001, 25):
+        report = context.to_context(max_chars=budget)
+        assert len(report) <= budget
+        if "- total_revenue" in report:
+            assert "coincidental" in report, budget
+
+
+def test_compact_context_keeps_both_sql_and_caveat_with_room():
+    report = inspect(_repeated_order_revenue_frame()).to_context(max_chars=5000)
+
+    assert "- total_revenue" in report
+    assert "coincidental" in report
+    assert "[Context truncated.]" not in report
+
+
+def test_metric_caveats_stay_in_structured_output():
+    payload = inspect(_repeated_order_revenue_frame()).to_dict()
+    total = next(m for m in payload["metrics"] if m["name"] == "total_revenue")
+
+    assert any("coincidental" in caveat for caveat in total["caveats"])

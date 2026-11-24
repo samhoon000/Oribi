@@ -8,9 +8,11 @@ _NON_ADDITIVE_TOKENS = {
     "average", "avg", "cagr", "ctr", "median", "per", "pct", "percent", "percentage", "percentages",
     "proportion", "proportions", "rate", "rates", "ratio", "ratios", "roi", "share", "shares",
 }
+_NON_ADDITIVE_TOKEN_PAIRS = {("unit", "price"), ("unit", "cost")}
 
 
 def reason_column(name: str, logical_type: str, semantic: SemanticContext, stats: StatisticsContext, row_count: int) -> tuple[tuple[Recommendation, ...], tuple[Warning, ...]]:
+    """Build guidance, treating adjacent unit price and unit cost name tokens as non-additive hints."""
     recommendations: list[Recommendation] = []
     warnings: list[Warning] = []
     high_cardinality_text = logical_type == "text" and semantic.role not in {"identifier", "temporal"} and stats.distinct_count > 100
@@ -31,7 +33,12 @@ def reason_column(name: str, logical_type: str, semantic: SemanticContext, stats
         if is_repeated:
             warnings.append(Warning("non_unique_identifier", "medium", "Identifier-like column is not unique", f"{name} has {stats.distinct_count} distinct values across rows and may identify repeated entities.", semantic.evidence, "Row counts measure record occurrences rather than unique entities; when identifiers repeat across rows, counting rows overcounts entities.", "Use COUNT DISTINCT when counting unique entities, as row counts and entity counts represent different measurements."))
     elif semantic.role == "measure":
-        if "%" in name or not _NON_ADDITIVE_TOKENS.isdisjoint(column_name_words(name)):
+        words = column_name_words(name)
+        if (
+            "%" in name
+            or not _NON_ADDITIVE_TOKENS.isdisjoint(words)
+            or not _NON_ADDITIVE_TOKEN_PAIRS.isdisjoint(zip(words, words[1:], strict=False))
+        ):
             evidence = (*semantic.evidence, Evidence("name_non_additive_hint", "The name suggests a rate, ratio, or other derived measure"))
             recommendations.append(Recommendation("SUM", "not_applicable", "Summing rates, ratios, or pre-aggregated measures across observations generally does not produce a meaningful total.", evidence))
             recommendations.append(Recommendation("MEAN", "caution", "Check weighting and denominators before combining derived values. Recompute a combined rate or ratio from its underlying totals when available.", evidence))

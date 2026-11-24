@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from dataclasses import replace
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -12,6 +13,7 @@ from ..models.evidence import Evidence, Warning
 _MIN_UNIQUE_TIMESTAMPS = 4
 _MIN_CADENCE_INTERVALS = 2
 _MIN_CADENCE_SHARE = 0.6
+_DAY = pd.Timedelta(days=1)
 _ISO_CALENDAR_VALUE = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
     r"(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?P<fraction>\.[0-9]{1,9})?)?"
@@ -58,31 +60,63 @@ def date_like_evidence(values: pd.Series, kind: str, distinct_count: int) -> Evi
     return None
 
 
-def temporal_gap_warnings(series: pd.Series, column_name: str, *, max_examples: int = 3,
-                          max_warnings: int = 10) -> tuple[Warning, ...]:
-    """Report possible gaps only when a dominant fixed cadence is supported."""
-    timestamps = pd.DatetimeIndex(series.dropna().drop_duplicates().sort_values())
-    if len(timestamps) < _MIN_UNIQUE_TIMESTAMPS:
-        return ()
+def _daily_calendar_steps(timestamps: pd.DatetimeIndex) -> list[int] | None:
+    """Require a common local clock time and dominant one-day spacing."""
+    local = timestamps.tz_localize(None)
+    steps = []
+    for before, after in zip(local[:-1], local[1:], strict=True):
+        days, remainder = divmod(after - before, _DAY)
+        if days < 1 or remainder:
+            return None
+        steps.append(days)
+    daily_count = steps.count(1)
+    if daily_count < _MIN_CADENCE_INTERVALS or daily_count / len(steps) < _MIN_CADENCE_SHARE:
+        return None
+    return steps
 
-    try:
-        deltas = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
-    except (pd.errors.OutOfBoundsDatetime, pd.errors.OutOfBoundsTimedelta, OverflowError):
-        return ()
+
+def _fixed_cadence(timestamps: pd.DatetimeIndex) -> tuple[pd.Timedelta, list[int]] | None:
+    deltas = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
     ranked = Counter(deltas).most_common()
     cadence, dominant_count = ranked[0]
     if len(ranked) > 1 and ranked[1][1] == dominant_count:
-        return ()
+        return None
     if dominant_count < _MIN_CADENCE_INTERVALS or dominant_count / len(deltas) < _MIN_CADENCE_SHARE:
-        return ()
+        return None
 
     steps_by_interval: list[int] = []
     for delta in deltas:
         # True division rounds large ratios and can hide a nonzero remainder.
         steps, remainder = divmod(delta, cadence)
         if steps < 1 or remainder != pd.Timedelta(0):
-            return ()
+            return None
         steps_by_interval.append(steps)
+    return cadence, steps_by_interval
+
+
+def temporal_gap_warnings(series: pd.Series, column_name: str, *, max_examples: int = 3,
+                          max_warnings: int = 10) -> tuple[Warning, ...]:
+    """Report possible gaps on a supported local daily or fixed elapsed cadence.
+
+    Calendar counts describe nominal local slots. Skip gaps with ambiguous or
+    nonexistent boundaries and omit any such timestamps from the examples.
+    """
+    timestamps = pd.DatetimeIndex(series.dropna().drop_duplicates().sort_values())
+    if len(timestamps) < _MIN_UNIQUE_TIMESTAMPS:
+        return ()
+
+    timezone = timestamps.tz
+    try:
+        calendar_steps = _daily_calendar_steps(timestamps) if timezone is not None else None
+        if calendar_steps is not None:
+            cadence, steps_by_interval = _DAY, calendar_steps
+        else:
+            fixed = _fixed_cadence(timestamps)
+            if fixed is None:
+                return ()
+            cadence, steps_by_interval = fixed
+    except (pd.errors.OutOfBoundsDatetime, pd.errors.OutOfBoundsTimedelta, OverflowError):
+        return ()
     if not any(steps > 1 for steps in steps_by_interval):
         return ()
 
@@ -93,13 +127,32 @@ def temporal_gap_warnings(series: pd.Series, column_name: str, *, max_examples: 
         missing_count = steps - 1
         if not missing_count:
             continue
+        before, after = timestamps[index], timestamps[index + 1]
+        local_before, local_after = before, after
+        if calendar_steps is not None:
+            local_before, local_after = before.tz_localize(None), after.tz_localize(None)
+        gap_start = local_before + cadence
+        gap_end = local_after - cadence
+        if calendar_steps is not None:
+            # Use the zone name for pandas versions with limited ZoneInfo localization.
+            zone = timezone.key if isinstance(timezone, ZoneInfo) else timezone
+            bounds = pd.DatetimeIndex([gap_start, gap_end]).tz_localize(
+                zone, ambiguous="NaT", nonexistent="NaT",
+            )
+            if bounds.hasnans:
+                continue
+            gap_start, gap_end = bounds[0], bounds[1]
+
         gap_count += 1
         if gap_count > max_warnings:
             continue
-        before, after = timestamps[index], timestamps[index + 1]
-        examples = [before + cadence * step for step in range(1, min(steps, max_examples + 1))]
-        gap_start = before + cadence
-        gap_end = after - cadence
+        examples = [
+            local_before + cadence * step for step in range(1, min(steps, max_examples + 1))
+        ]
+        if calendar_steps is not None and examples:
+            examples = list(pd.DatetimeIndex(examples).tz_localize(
+                zone, ambiguous="NaT", nonexistent="NaT",
+            ).dropna())
         evidence = Evidence(
             "temporal_gap",
             f"{missing_count} timestamp(s) may be absent relative to an inferred {cadence_text} cadence",
