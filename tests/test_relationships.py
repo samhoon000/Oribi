@@ -152,6 +152,10 @@ def test_complete_entity_key_establishes_exact_one_to_many():
     assert key.verified_unique
     assert any(rel.kind == "one_to_many" and rel.source_column == "customer_id"
                and rel.target_column == "order_id" for rel in context.relationships)
+    assert [
+        rel.related_columns for rel in context.get_column("customer_id").relationships
+        if rel.kind == "groups_observations"
+    ] == [("order_id",)]
 
 
 @pytest.mark.parametrize("column_limit", [1, 2])
@@ -195,6 +199,34 @@ def test_one_to_many_keeps_multiple_verified_entity_keys_within_budget():
         assert [
             (rel.source_column, rel.target_column, rel.kind) for rel in context.relationships
         ] == [("region", entity, "one_to_many") for entity in entities]
+
+
+def test_multiple_one_to_many_links_are_annotated_and_rendered_once():
+    frame = pd.DataFrame({
+        "order_id": range(1, 9),
+        "customer_id": range(11, 19),
+        "region": ["a", "b"] * 4,
+    })
+    targets = {"customer_id", "order_id"}
+
+    for data in (frame, frame[["region", "customer_id", "order_id"]]):
+        context = inspect(data)
+        assert {
+            (rel.source_column, rel.target_column)
+            for rel in context.relationships if rel.kind == "one_to_many"
+        } == {("region", target) for target in targets}
+        assert sorted(
+            rel.related_columns for rel in context.get_column("region").relationships
+            if rel.kind == "groups_observations"
+        ) == [(target,) for target in sorted(targets)]
+
+        lines = [
+            line for line in context.to_context(max_chars=20000).splitlines()
+            if "one-to-many" in line
+        ]
+        assert len(lines) == len(targets)
+        for target in targets:
+            assert sum(f"maps observations to {target};" in line for line in lines) == 1
 
 
 def test_one_to_many_group_budget_still_prefers_reused_identifiers():
@@ -339,9 +371,13 @@ def test_multiple_temporal_columns_are_each_related_to_observations():
         assert any(rel.kind == "temporal_attribute" for rel in _column(context, name).relationships)
 
 
-def test_arbitrary_reused_categorical_column_is_a_grouping_dimension():
-    context = inspect(pd.DataFrame({"Q": ["north", "south", "north", "north", "south"]}))
-    assert [rel.kind for rel in _column(context, "Q").relationships].count("groups_observations") == 1
+@pytest.mark.parametrize("name", ["Q", "customer_id"])
+def test_reused_column_without_explicit_links_has_generic_grouping(name):
+    context = inspect(pd.DataFrame({name: ["north", "south", "north", "north", "south"]}))
+    assert [
+        rel.related_columns for rel in context.get_column(name).relationships
+        if rel.kind == "groups_observations"
+    ] == [()]
 
 
 def test_unique_determinants_do_not_create_trivial_functional_dependencies():

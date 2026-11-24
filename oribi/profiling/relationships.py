@@ -53,7 +53,10 @@ def infer_column_relationships(
     inferred: dict[str, list[ColumnRelationshipContext]] = {name: [] for name in cardinalities}
 
     def add(name: str, relation: ColumnRelationshipContext) -> None:
-        if relation.kind not in {existing.kind for existing in inferred[name]}:
+        if not any(
+            existing.kind == relation.kind and existing.related_columns == relation.related_columns
+            for existing in inferred[name]
+        ):
             inferred[name].append(relation)
 
     candidates_by_columns = {candidate.columns: candidate for candidate in key_candidates}
@@ -160,6 +163,7 @@ def infer_column_relationships(
         col_semantic = semantics[name]
         coverage = cardinality.observed_count / cardinality.row_count if cardinality.row_count else 0.0
         generalization = _generalization_support(cardinality.observed_count)
+        has_group_relation = any(rel.kind == "groups_observations" for rel in inferred[name])
         if col_semantic.role == "measure":
             # A measure can only be attached to a named grain when that grain
             # has meaningful sample support. Otherwise its observed level is
@@ -213,7 +217,6 @@ def infer_column_relationships(
             ))
         elif col_semantic.role in {"dimension", "categorical", "boolean"}:
             ratio = cardinality.uniqueness_ratio or 0.0
-            has_group_relation = any(rel.kind == "groups_observations" for rel in inferred[name])
             if cardinality.unique_count > 0 and ratio < 1 and not has_group_relation:
                 col_evidence = Evidence(
                     "reusable_values_across_observations",
@@ -239,7 +242,7 @@ def infer_column_relationships(
                     evidence_strength=1 - ratio,
                     confidence_components=components,
                 ))
-        elif col_semantic.role == "identifier" and cardinality.unique_count > 1:
+        elif col_semantic.role == "identifier" and cardinality.unique_count > 1 and not has_group_relation:
             ratio = cardinality.uniqueness_ratio or 0.0
             if ratio < 1:
                 col_evidence = Evidence(
