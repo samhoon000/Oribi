@@ -2,19 +2,34 @@
 
 All notable changes to Oribi are recorded here.
 
-## Unreleased
+## 0.3.0 — 2026-11-24
 
 ### Added and improved
 
-- Explicitly flag unsafe operations (such as SUM and MEAN) as inappropriate for identifier values.
-- Explain why counting rows differs from counting distinct entities when identifiers repeat or duplicate rows occur.
-- Add aggregation recommendations and usage guidance for categorical and dimension columns, explaining when grouping or counting distinct values is useful.
-- Provide explicit starting-point rationale for SUM and MEAN on numeric measures while preserving cautions for negative values and skew.
-- Surface inappropriate aggregation guidance and useful operations (such as COUNT DISTINCT on categorical columns or MEDIAN on measures) in Markdown and compact context reports.
+- Infer evidence-backed analytical metrics in `DatasetContext.metrics`, including entity counts, additive totals, per-entity averages, and ratios. Export metric definitions and SQL with evidence and caveats. (#126)
+- Add `DatasetContext.get_column(name)` and allow `ProfileOptions(top_k=0)` to disable top-value sampling. (#99, #101)
+- Add categorical value context, constancy evidence, duplicate-check warnings, and a structured indicator for profiles that exceed the exact row limit. Improve numeric role inference and identify more distinct forms of identifier names. (#77, #79, #80, #97, #114)
+- Explain aggregation choices in Markdown and compact reports, including why identifiers are unsuitable for sums or averages, when to count distinct entities, and when grouping by dimensions is useful. Preserve cautions for skew, negative values, rates, and unit prices or costs. (#70, #72, #75, #98, #156, #169)
 
 ### Fixed
 
-- Detach mutable list and dictionary values nested inside tuple samples when snapshotting top values, so editing the source data after inspection no longer changes an already-captured context.
+- Preserve every verified one-to-many target in column annotations and compact context, and reserve relationship scan slots for eligible columns. (#117, #131, #147, #153, #176)
+- Exclude native elapsed durations from composite keys while preserving datetime keys. Keep near-unique columns eligible for verified composite keys, prevent fallback object counts from verifying keys, and leave grain ambiguous when independent timestamps provide equally strong evidence. (#124, #129, #154, #171, #175, #176)
+- Correct metric deduplication when keys have incomplete coverage, keep deduplication caveats alongside SQL, and quote SQL reserved column names. (#145, #151, #173, #174)
+- Improve profiling of sparse numbers, nullable integers, decimals, object-backed booleans, pandas periods and intervals, and unhashable index labels. Avoid narrow-dtype overflow and unsupported claims of zero dispersion. (#96, #120, #150, #155, #163, #166, #170, #172, #173)
+- Preserve nanosecond datetime bounds and report separate temporal gaps accurately, including local daily schedules across daylight saving. Skip gap detection when timestamp deltas exceed pandas limits. (#116, #121, #122, #139, #167)
+- Stabilize top-value ties and detach mutable values nested inside tuple samples. Structured opt-in exports handle extended floats and raise clear errors for circular samples or mapping keys that collide during serialization. (#76, #95, #119, #165, #168)
+- Validate profile and compact-report limits, retain useful context when samples exceed the output budget, and render empty or multiline labels and cardinality ratios clearly. (#69, #102, #103, #125, #138, #152, #157)
+
+### Compatibility
+
+- Runtime requirements remain Python 3.10–3.14 and pandas 1.5.3 through 3.x. Structured exports retain schema version `2` and gain analytical metric and profiling fields. Consumers with strict field allowlists should account for the additions. Opt-in structured exports reject mapping-key collisions that could previously overwrite values.
+
+### Documentation and tooling
+
+- Refresh the README and quickstart, including examples for key and grain inspection and for resetting indexes with colliding names. Add Ruff and mypy to CI. (#81, #82, #93, #100, #118, #164)
+
+Thanks to @abhishekrajv7-cmd, @AryanSingh2029, @ashenthefox, @avaldivieso-meraki, @bhuvi-777, @chocolinax, @dev-burnern, @dh1011, @fbirds5230, @flipcyde101, @hnimXgibhut, @IG-ABHINAV, @LuciferAksh, @paulxg12, @samhoon000, @sharmao07, @sudharshan-s-1286, @sundaysebasidian-byte, @swpswpswp, and @TranTrungNhan123 for contributing to this release.
 
 ## 0.2.0 — 2026-11-19
 
