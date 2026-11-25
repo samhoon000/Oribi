@@ -2,6 +2,12 @@
 
 All notable changes to Oribi are recorded here.
 
+## Unreleased
+
+### Fixed
+
+- Serialize NumPy datetime samples as ISO timestamps, preserving nanosecond precision in opt-in dictionary and JSON exports.
+
 ## 0.3.0 — 2026-11-24
 
 ### Added and improved

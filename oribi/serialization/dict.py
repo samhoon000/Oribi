@@ -8,6 +8,8 @@ from datetime import date, datetime
 from numbers import Integral, Real
 from typing import Any
 
+import numpy as np
+
 from ..models.evidence import CategoricalContext
 
 
@@ -94,6 +96,10 @@ def _normalize(
             _active.discard(id(value))
     if isinstance(value, (datetime, date)):
         return value.isoformat()
+    if isinstance(value, np.datetime64):
+        # .item() returns integer ticks at nanosecond resolution, losing the
+        # timestamp's meaning. Format in NumPy to retain fractional precision.
+        return None if np.isnat(value) else str(np.datetime_as_string(value, unit="auto"))
     if hasattr(value, "item"):
         try:
             unwrapped = value.item()

@@ -840,3 +840,32 @@ def test_normalize_preserves_standard_numpy_scalars_and_handles_clongdouble():
     assert _normalize(np.bool_(True)) is True
     assert type(_normalize(np.bool_(True))) is bool
     assert _normalize(np.clongdouble(1 + 2j)) == str(np.clongdouble(1 + 2j))
+
+
+def test_numpy_datetime_samples_keep_nanosecond_precision():
+    from datetime import datetime
+
+    import pandas as pd
+
+    samples = [
+        np.datetime64("2025-01-02T03:04:05.123456789", "ns"),
+        np.datetime64("2025-01-02T03:04:05", "us"),
+    ]
+    context = inspect(pd.DataFrame({"samples": [[value] for value in samples]}))
+    exported = context.to_dict(include_values=True)
+    top_values = exported["columns"][0]["statistics"]["top_values"]
+    values = [sample[0][0] for sample in top_values]
+    assert values == [
+        "2025-01-02T03:04:05.123456789",
+        "2025-01-02T03:04:05",
+    ]
+    assert json.loads(context.to_json(include_values=True)) == exported
+    assert _normalize(datetime(2025, 1, 2, 3, 4, 5)) == "2025-01-02T03:04:05"
+    assert _normalize(pd.Timestamp("2025-01-02T03:04:05.123456789")) == "2025-01-02T03:04:05.123456789"
+    assert _normalize(np.int64(7)) == 7
+    for default in (context.to_dict(), json.loads(context.to_json())):
+        assert default["columns"][0]["statistics"]["top_values"] == []
+
+
+def test_numpy_datetime_nat_serializes_as_none():
+    assert _normalize(np.datetime64("NaT", "ns")) is None
