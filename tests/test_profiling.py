@@ -8,6 +8,20 @@ import pytest
 from oribi import ProfileOptions, inspect
 
 
+@pytest.mark.parametrize("dtype", ["int8", "Int8", "int64", "Int64"])
+def test_signed_integer_quantiles_do_not_overflow(dtype):
+    bits = int(dtype[3:])
+    lower = -(2 ** (bits - 1))
+    upper = 2 ** (bits - 2)
+    frame = pd.DataFrame({"amount": pd.Series([lower, upper], dtype=dtype)})
+
+    stats = inspect(frame).get_column("amount").statistics
+
+    assert stats.quantiles == pytest.approx({
+        str(q): lower + q * (upper - lower) for q in (0.25, 0.5, 0.75)
+    })
+
+
 @pytest.mark.parametrize("dtype,base", [("Int64", 0), ("Int64", -(2**62)), ("UInt64", 2**63)])
 @pytest.mark.parametrize("step", [0, 1])
 def test_integer_dispersion_is_independent_of_offset(dtype, base, step):
