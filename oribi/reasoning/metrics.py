@@ -400,6 +400,20 @@ def _merge_caveats(base: tuple[str, ...], *extra: str) -> tuple[str, ...]:
     return tuple(merged)
 
 
+def _merge_columns(base: tuple[str, ...], *extra: str | None) -> tuple[str, ...]:
+    """Append dependency columns in first-seen order, dropping ``None`` and duplicates.
+
+    A metric's ``columns`` must name every column its SQL reads: consumers may
+    project exactly those columns before executing it. Determinants are chosen
+    per SQL branch, so each branch contributes the grouping keys it uses.
+    """
+    merged = list(base)
+    for name in extra:
+        if name is not None and name not in merged:
+            merged.append(name)
+    return tuple(merged)
+
+
 def _column_caveats(
     cols: Sequence[ColumnContext],
     *,
@@ -849,6 +863,12 @@ def _infer_measure_per_entity(
                     per_entity_caveats.append(_unchecked_grain_caveat(m_col, skip_reason))
                 caveats = _merge_caveats(base_caveats, *per_entity_caveats)
 
+            # The deduplicated branches above group by ``det_col``, so its name
+            # must be advertised alongside the measure and entity columns.
+            columns = _merge_columns(
+                (m_col.name, id_col.name), det_col.name if det_col is not None else None
+            )
+
             results.append(
                 (
                     (priority_tier, -confidence, name),
@@ -857,7 +877,7 @@ def _infer_measure_per_entity(
                         label=label,
                         kind="measure_per_entity",
                         sql=sql,
-                        columns=(m_col.name, id_col.name),
+                        columns=columns,
                         confidence=confidence,
                         rationale=rationale,
                         evidence=tuple(evidence),
@@ -1129,7 +1149,11 @@ def _build_measure_ratio(
             label=label,
             kind="measure_ratio",
             sql=sql,
-            columns=(numerator.name, denominator.name),
+            columns=_merge_columns(
+                (numerator.name, denominator.name),
+                num_det.name if num_det is not None else None,
+                den_det.name if den_det is not None else None,
+            ),
             confidence=confidence,
             rationale=rationale,
             evidence=tuple(evidence_list),

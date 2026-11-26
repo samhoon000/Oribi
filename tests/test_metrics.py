@@ -372,6 +372,72 @@ def test_deduplicated_total_declares_grouping_column_dependencies():
     assert qty_payload["columns"] == ["quantity"]
 
 
+def test_deduplicated_metrics_declare_grouping_column_dependencies():
+    """A deduplicated metric must advertise every column its SQL groups by.
+
+    Consumers may project exactly ``MetricDefinition.columns`` before running
+    the SQL. The per-entity and ratio builders used to advertise only the
+    measure (and entity) columns while their SQL also read the determinant,
+    so such a projection failed with ``no such column: order_id``.
+    """
+    frame = pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2, 3, 3],
+            "customer_id": ["a", "a", "a", "a", "b", "b"],
+            "revenue": [10.0, 10.0, 20.0, 20.0, 30.0, 30.0],
+            "profit": [2.0, 2.0, 6.0, 6.0, 12.0, 12.0],
+            "quantity": [1, 2, 3, 4, 5, 6],
+        }
+    )
+    context = inspect(frame)
+
+    # Shared determinant: both sides deduplicate at order_id grain.
+    margin = _metric(context, "profit_margin")
+    assert margin.columns == ("profit", "revenue", "order_id")
+    assert "GROUP BY order_id" in margin.sql
+    assert _eval_sql(frame[list(margin.columns)], margin.sql) == pytest.approx(20.0 / 60.0)
+    assert _eval_sql(frame, margin.sql) == pytest.approx(20.0 / 60.0)
+
+    # Shared determinant, with a distinct-entity divisor.
+    rpc = _metric(context, "revenue_per_customer")
+    assert rpc.columns == ("revenue", "customer_id", "order_id")
+    assert _eval_sql(frame[list(rpc.columns)], rpc.sql) == pytest.approx(30.0)
+    assert _eval_sql(frame, rpc.sql) == pytest.approx(30.0)
+
+    # One-sided determinant: only the numerator is deduplicated.
+    rpu = _metric(context, "revenue_per_unit")
+    assert rpu.columns == ("revenue", "quantity", "order_id")
+    assert _eval_sql(frame[list(rpu.columns)], rpu.sql) == pytest.approx(60.0 / 21.0)
+    assert _eval_sql(frame, rpu.sql) == pytest.approx(60.0 / 21.0)
+
+    payload = {metric["name"]: metric for metric in context.to_dict()["metrics"]}
+    assert payload["profit_margin"]["columns"] == ["profit", "revenue", "order_id"]
+    assert payload["revenue_per_customer"]["columns"] == [
+        "revenue",
+        "customer_id",
+        "order_id",
+    ]
+    assert payload["revenue_per_unit"]["columns"] == ["revenue", "quantity", "order_id"]
+    for metric in context.metrics:
+        assert len(metric.columns) == len(set(metric.columns)), metric.name
+
+
+def test_plain_measure_ratio_declares_only_its_measures():
+    """Control: without deduplication a ratio still advertises just its measures."""
+    frame = pd.DataFrame(
+        {
+            "order_id": [1, 2, 3],
+            "revenue": [10.0, 20.0, 30.0],
+            "profit": [2.0, 6.0, 12.0],
+        }
+    )
+    margin = _metric(inspect(frame), "profit_margin")
+
+    assert margin.columns == ("profit", "revenue")
+    assert "GROUP BY" not in margin.sql
+    assert _eval_sql(frame[list(margin.columns)], margin.sql) == pytest.approx(20.0 / 60.0)
+
+
 def test_average_order_value_excludes_rows_missing_entity_id():
     frame = pd.DataFrame(
         {
