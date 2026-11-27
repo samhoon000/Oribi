@@ -112,6 +112,9 @@ class AnalysisSession:
                 logical = "numeric"
             elif kind == "string":
                 logical = "text"
+            elif kind == "period":
+                # Object-stored Period values are calendar bins, not text labels.
+                logical = "unknown"
             else:
                 first_type = type(values.iloc[0])
                 logical = "text" if all(type(value) is first_type for value in values) else "unknown"

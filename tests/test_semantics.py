@@ -437,6 +437,93 @@ def test_real_record_id_still_establishes_grain_alongside_period_column():
     assert [key.columns for key in context.candidate_keys] == [("record_id",)]
 
 
+@pytest.mark.parametrize("as_object", [False, True], ids=["native", "object"])
+def test_object_backed_periods_match_native_role_and_grain(as_object):
+    import pandas as pd
+
+    periods = pd.period_range("2025-01", periods=4, freq="M")
+    series = pd.Series(periods, dtype=object) if as_object else pd.Series(periods)
+    frame = pd.DataFrame({"month": series})
+    expected = frame.copy()
+    context = inspect(frame)
+    column = context.get_column("month")
+
+    assert column.dtype == ("object" if as_object else str(periods.dtype))
+    assert column.semantic.role == "temporal"
+    assert any(e.code == "period_dtype" for e in column.semantic.evidence)
+    assert column.statistics.date_range is None
+    assert not context.candidate_keys
+    assert context.grain.status == "undetermined"
+    assert context.grain.columns == ()
+    assert not any(w.code == "potential_temporal_gap" for w in context.warnings)
+    pd.testing.assert_frame_equal(frame, expected)
+
+
+def test_object_periods_with_missing_values_stay_temporal_without_gap():
+    import pandas as pd
+
+    frame = pd.DataFrame({
+        "month": pd.Series(
+            [
+                pd.Period("2025-01", "M"),
+                pd.Period("2025-01", "M"),
+                pd.Period("2025-02", "M"),
+                None,
+                pd.Period("2025-04", "M"),
+            ],
+            dtype=object,
+        ),
+        "region": ["north", "south", "north", "south", "north"],
+    })
+    context = inspect(frame)
+    column = context.get_column("month")
+
+    assert column.dtype == "object"
+    assert column.semantic.role == "temporal"
+    assert column.statistics.missing_count == 1
+    assert column.statistics.date_range is None
+    assert not any("month" in key.columns for key in context.candidate_keys)
+    assert context.grain.status == "undetermined"
+    assert not any(w.code == "potential_temporal_gap" for w in context.warnings)
+
+
+def test_mixed_period_and_string_objects_do_not_take_period_path():
+    import pandas as pd
+
+    frame = pd.DataFrame({
+        "month": pd.Series(
+            [pd.Period("2025-01", "M"), "2025-02", pd.Period("2025-03", "M")],
+            dtype=object,
+        ),
+    })
+    column = inspect(frame).get_column("month")
+
+    assert column.dtype == "object"
+    assert column.semantic.role != "temporal"
+    assert not any(e.code == "period_dtype" for e in column.semantic.evidence)
+
+
+def test_object_period_column_does_not_block_record_id_grain():
+    import pandas as pd
+
+    frame = pd.DataFrame({
+        "record_id": list(range(1, 9)),
+        "month": pd.Series(pd.period_range("2025-01", periods=8, freq="M"), dtype=object),
+        "revenue": [100.0, 120.0, 115.0, 140.0, 130.0, 150.0, 160.0, 175.0],
+    })
+    context = inspect(frame)
+    month = context.get_column("month")
+    record_id = context.get_column("record_id")
+
+    assert month.dtype == "object"
+    assert month.semantic.role == "temporal"
+    assert any(e.code == "period_dtype" for e in month.semantic.evidence)
+    assert record_id.semantic.role == "identifier"
+    assert context.grain.status == "estimated"
+    assert context.grain.columns == ("record_id",)
+    assert [key.columns for key in context.candidate_keys] == [("record_id",)]
+
+
 @pytest.mark.parametrize("values", [[], [None, None], [5.0]])
 def test_float64_insufficient_observations_do_not_claim_zero_dispersion(values):
     import pandas as pd

@@ -57,6 +57,12 @@ def date_like_evidence(values: pd.Series, kind: str, distinct_count: int) -> Evi
         isinstance(first, date) and all(isinstance(value, date) for value in values)
     ):
         return Evidence("temporal_object_values", "All non-missing values are date or datetime objects", details)
+    elif kind == "period":
+        return Evidence(
+            "period_dtype",
+            "All non-missing values are pandas Period objects",
+            {"dtype": str(values.dtype)},
+        )
     return None
 
 
