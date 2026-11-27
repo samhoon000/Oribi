@@ -869,3 +869,138 @@ def test_numpy_datetime_samples_keep_nanosecond_precision():
 
 def test_numpy_datetime_nat_serializes_as_none():
     assert _normalize(np.datetime64("NaT", "ns")) is None
+
+
+def test_truncated_context_preserves_warnings_for_wide_schema():
+    df = pd.DataFrame({f"feature_{i:02d}": [1, 1, 1, 1] for i in range(20)})
+    df["revenue"] = [10.0, None, None, None]
+    context = inspect(df)
+    before_dict = context.to_dict()
+    before_json = context.to_json()
+    before_summary = context.summary()
+
+    compact = context.to_context(max_chars=350)
+    assert len(compact) <= 350
+    assert compact.startswith("DATASET\n4 rows × 21 columns")
+    assert compact.endswith("[Context truncated.]")
+    assert "WARNINGS" in compact
+    assert "revenue is missing 75.0% of its values." in compact
+    assert "2 fully duplicated rows were observed." in compact
+
+    at_minimum = context.to_context(max_chars=100)
+    assert len(at_minimum) <= 100
+    assert at_minimum.startswith("DATASET\n4 rows × 21 columns")
+    assert at_minimum.endswith("[Context truncated.]")
+
+    full = context.to_context(max_chars=20000)
+    assert "[Context truncated.]" not in full
+    assert "WARNINGS" in full
+    assert "feature_19" in full
+    assert "revenue" in full
+
+    assert context.to_dict() == before_dict
+    assert context.to_json() == before_json
+    assert context.summary() == before_summary
+
+
+def test_truncated_context_reserves_highest_priority_warnings_and_respects_no_warning_wide_schema():
+    from oribi.models.evidence import Warning
+
+    wide_no_warnings = inspect(pd.DataFrame({f"feature_{i:02d}": [1, 2, 3, 4] for i in range(20)}))
+    assert not wide_no_warnings.warnings
+    no_warning_compact = wide_no_warnings.to_context(max_chars=350)
+    assert len(no_warning_compact) <= 350
+    assert no_warning_compact.endswith("[Context truncated.]")
+    assert "WARNINGS" not in no_warning_compact
+    assert "COLUMNS" in no_warning_compact
+
+    low_warning = Warning(
+        "z_low",
+        "low",
+        "Low note",
+        "low priority note with extra diagnostic context that also overflows tight budgets.",
+    )
+    medium_warning = Warning(
+        "m_med",
+        "medium",
+        "Medium note",
+        "medium priority note with extra diagnostic context that overflows tight budgets.",
+    )
+    high_warning = Warning("a_high", "high", "High note", "high priority note.")
+    critical_warning = Warning("c_crit", "critical", "Critical note", "critical priority note.")
+    prioritized_context = replace(
+        wide_no_warnings,
+        warnings=(low_warning, medium_warning, high_warning, critical_warning),
+    )
+
+    # At 165 chars only the top warning fits after header, marker, and grain;
+    # optional schema rows must not crowd it out.
+    one_warning_only = prioritized_context.to_context(max_chars=165)
+    assert len(one_warning_only) <= 165
+    assert "critical priority note." in one_warning_only
+    assert "high priority note." not in one_warning_only
+    assert "low priority note" not in one_warning_only
+    assert "COLUMNS" not in one_warning_only
+
+    # Exact-fit boundary checks that `<=` budgets allow the fitting warning and
+    # the next schema row without exceeding max_chars.
+    exact_warning_budget = len(one_warning_only)
+    exact_warning_fit = prioritized_context.to_context(max_chars=exact_warning_budget)
+    assert exact_warning_fit == one_warning_only
+    assert len(exact_warning_fit) == exact_warning_budget
+
+    # At 235 chars, critical + high warnings and a schema row fit while the
+    # larger medium and low warnings overflow.
+    two_warnings_and_cols = prioritized_context.to_context(max_chars=235)
+    assert len(two_warnings_and_cols) <= 235
+    assert "critical priority note." in two_warnings_and_cols
+    assert "high priority note." in two_warnings_and_cols
+    assert "medium priority note" not in two_warnings_and_cols
+    assert "low priority note" not in two_warnings_and_cols
+    assert "COLUMNS" in two_warnings_and_cols
+
+    exact_mixed_fit = prioritized_context.to_context(max_chars=len(two_warnings_and_cols))
+    assert exact_mixed_fit == two_warnings_and_cols
+    assert len(exact_mixed_fit) == len(two_warnings_and_cols)
+
+    # Non-warning sections still retain a shorter later row when an earlier row overflows.
+    mixed_width_cols = inspect(pd.DataFrame({"a_" + "x" * 100: [1, 2, 3], "z_short": [1, 2, 3]}))
+    mixed_width_compact = mixed_width_cols.to_context(max_chars=160)
+    assert len(mixed_width_compact) <= 160
+    assert "- z_short:" in mixed_width_compact
+
+
+def test_truncated_context_skips_oversized_warning_and_keeps_fitting_warnings():
+    from oribi.models.evidence import Warning
+
+    wide_no_warnings = inspect(pd.DataFrame({f"feature_{i:02d}": [1, 2, 3, 4] for i in range(20)}))
+
+    oversized_critical = Warning("z_crit", "critical", "Oversized", "C" * 1000)
+    short_high = Warning("b_high", "high", "Short high", "short high warning.")
+    short_medium = Warning("a_med", "medium", "Short medium", "short medium warning.")
+    context = replace(
+        wide_no_warnings,
+        warnings=(short_medium, oversized_critical, short_high),
+    )
+
+    # Even when the 1000-character critical warning overflows at 160 chars, the
+    # short high-priority warning still fits and is not crowded out by columns.
+    tight = context.to_context(max_chars=160)
+    assert len(tight) <= 160
+    assert tight.startswith("DATASET\n4 rows × 20 columns")
+    assert tight.endswith("[Context truncated.]")
+    assert "WARNINGS" in tight
+    assert "short high warning." in tight
+    assert "short medium warning." not in tight
+    assert "COLUMNS" not in tight
+
+    # At 350 chars both fitting warnings survive in priority order after skipping
+    # the oversized critical warning.
+    wider = context.to_context(max_chars=350)
+    assert len(wider) <= 350
+    assert wider.startswith("DATASET\n4 rows × 20 columns")
+    assert wider.endswith("[Context truncated.]")
+    assert "WARNINGS" in wider
+    assert wider.index("short high warning.") < wider.index("short medium warning.")
+    assert "C" * 50 not in wider
+    assert "COLUMNS" in wider

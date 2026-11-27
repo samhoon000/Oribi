@@ -215,12 +215,13 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
             "Pandas could not compare rows with the available cell values.",
         ))
     metric_columns = [column for column in columns if exact_distinct[column.name]]
-    (
-        entity_constant_measures,
-        entity_determinants,
-        multi_parent_pairs,
-        partially_covered_measures,
-    ) = detect_metric_grain_facts(
+    has_unsupported_repeating_id = any(
+        not exact_distinct[column.name]
+        and column.semantic.role == "identifier"
+        and column.statistics.distinct_count < cardinalities[column.name].observed_count
+        for column in columns
+    )
+    grain_facts = detect_metric_grain_facts(
         df,
         metric_columns,
         relationships,
@@ -233,10 +234,13 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
         relationships=relationships,
         row_count=nrows,
         has_duplicate_rows=bool(duplicates),
-        entity_constant_measures=entity_constant_measures,
-        entity_determinants=entity_determinants,
-        multi_parent_pairs=multi_parent_pairs,
-        partially_covered_measures=partially_covered_measures,
+        entity_constant_measures=grain_facts.entity_constant_measures,
+        entity_determinants=grain_facts.entity_determinants,
+        multi_parent_pairs=grain_facts.multi_parent_pairs,
+        partially_covered_measures=grain_facts.partially_covered_measures,
+        metric_grain_skip_reason=grain_facts.skip_reason,
+        unchecked_measures=grain_facts.unchecked_measures,
+        has_unsupported_repeating_id=has_unsupported_repeating_id,
     )
     return DatasetContext(
         profile=DatasetProfile(

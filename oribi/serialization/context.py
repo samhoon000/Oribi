@@ -473,32 +473,48 @@ def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = Fa
     kept = header[:essential_header]
     available = max_chars - len("\n".join((*kept, marker)))
 
-    def add_section(title: str, lines: Sequence[str]) -> None:
-        nonlocal available
-        heading = ["", title]
+    def fit_section_lines(title: str, lines: Sequence[str], budget: int) -> tuple[list[str], int]:
+        selected: list[str] = []
+        used = 0
         overhead = len(title) + 2
         for line in lines:
             size = overhead + len(line) + 1
-            if size <= available:
-                kept.extend(heading)
-                kept.append(line)
-                available -= size
-                heading = []
+            if used + size <= budget:
+                selected.append(line)
+                used += size
                 overhead = 0
+        return selected, used
+
+    def add_section(title: str, lines: Sequence[str], *, reserve: int = 0) -> None:
+        nonlocal available
+        selected, used = fit_section_lines(title, lines, available - reserve)
+        if selected:
+            kept.extend(["", title, *selected])
+            available -= used
 
     add_section(grain_lines[0], grain_lines[1:])
-    add_section("COLUMNS", [
-        f"- {_compact_column_label(col.name)}: {col.dtype}/{col.semantic.role}"
-        + (f" · {col.statistics.missing_rate:.0%} missing" if col.statistics.missing_count else "")
-        for col in ranked
-    ])
+    warning_messages: list[str] = []
+    reserved_warnings = 0
     if warning_lines:
         prioritized = prioritize_warnings(all_warnings)
         selected_warnings = prioritized[:10]
-        messages = [f"⚠ {warning.message}" for warning in selected_warnings]
+        warning_messages = [f"\u26a0 {warning.message}" for warning in selected_warnings]
         if len(prioritized) > len(selected_warnings):
-            messages.append(f"{len(prioritized) - len(selected_warnings)} additional warnings omitted.")
-        add_section("WARNINGS", messages)
+            warning_messages.append(
+                f"{len(prioritized) - len(selected_warnings)} additional warnings omitted."
+            )
+        _, reserved_warnings = fit_section_lines("WARNINGS", warning_messages, available)
+    add_section(
+        "COLUMNS",
+        [
+            f"- {_compact_column_label(col.name)}: {col.dtype}/{col.semantic.role}"
+            + (f" · {col.statistics.missing_rate:.0%} missing" if col.statistics.missing_count else "")
+            for col in ranked
+        ],
+        reserve=reserved_warnings,
+    )
+    if warning_messages:
+        add_section("WARNINGS", warning_messages)
     add_section("AGGREGATION GUIDANCE", [line for _, line in sorted(guidance, key=lambda item: not item[0])])
     if header[essential_header:]:
         add_section("DATASET DETAILS", header[essential_header:])

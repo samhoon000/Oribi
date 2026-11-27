@@ -1,3 +1,4 @@
+import math
 import warnings
 from decimal import Decimal
 
@@ -56,6 +57,40 @@ def test_decimal_prices_have_numeric_statistics_and_measure_semantics(repeat):
     assert dict(stats.top_values) == dict.fromkeys(values, repeat)
     pd.testing.assert_frame_equal(frame, original)
     assert all(type(value) is Decimal for value in frame["price"].dropna())
+
+
+def test_arrow_decimal_quartiles_preserve_profile_values():
+    pa = pytest.importorskip("pyarrow")
+    amounts = [Decimal("1.25"), Decimal("2.50"), Decimal("3.75")]
+    dtype = pd.ArrowDtype(pa.decimal128(6, 2))
+    frame = pd.DataFrame({"amount": pd.Series([*amounts, None], dtype=dtype)})
+    original = frame.copy()
+    disabled = inspect(frame, options=ProfileOptions(include_quantiles=False)).get_column("amount")
+    assert disabled.statistics.mean == 2.5
+    assert not disabled.statistics.quantiles
+
+    object_frame = pd.DataFrame({"amount": pd.Series([*amounts, None], dtype=object)})
+    expected = inspect(object_frame).get_column("amount").statistics.quantiles
+    column = inspect(frame).get_column("amount")
+    stats = column.statistics
+    assert stats.quantiles == expected == {"0.25": 1.875, "0.5": 2.5, "0.75": 3.125}
+    for profile in (column, disabled):
+        assert profile.dtype == str(dtype)
+        assert profile.logical_type == "numeric"
+        assert profile.statistics.missing_count == 1
+        assert isinstance(profile.statistics.minimum, Decimal)
+        assert isinstance(profile.statistics.maximum, Decimal)
+        assert profile.statistics.minimum == amounts[0]
+        assert profile.statistics.maximum == amounts[-1]
+        assert dict(profile.statistics.top_values) == dict.fromkeys(amounts, 1)
+        assert all(isinstance(value, Decimal) for value, _ in profile.statistics.top_values)
+    pd.testing.assert_frame_equal(frame, original)
+
+
+def test_numeric_quantiles_without_finite_values_are_empty():
+    frame = pd.DataFrame({"amount": [float("-inf"), float("inf"), None]})
+    column = inspect(frame).get_column("amount")
+    assert column.statistics.quantiles == {}
 
 
 def test_decimal_numeric_moments_exclude_infinities():
@@ -184,16 +219,52 @@ def test_narrow_float_statistics_do_not_overflow(dtype, readings):
     assert narrow.quantiles == pytest.approx(wide.quantiles)
 
 
+@pytest.mark.parametrize(
+    "values,center",
+    [
+        pytest.param([9e307, 1e308], 9.5e307, id="positive-large"),
+        pytest.param([-1e308, -9e307], -9.5e307, id="negative-large"),
+        pytest.param([1.5, 2.5], 2.0, id="ordinary"),
+    ],
+)
+def test_large_finite_float_mean_and_median_stay_finite(values, center):
+    # Quantiles stay disabled so the median cannot borrow the 50th percentile.
+    column = inspect(
+        pd.DataFrame({"amount": values}),
+        options=ProfileOptions(include_quantiles=False),
+    ).get_column("amount")
+
+    assert column.statistics.mean == pytest.approx(center)
+    assert column.statistics.median == pytest.approx(center)
+    assert column.statistics.quantiles == {}
+
+
+def test_large_finite_float_statistics_exclude_missing_and_non_finite():
+    values = [9e307, 1e308, None, float("inf"), float("nan")]
+    column = inspect(
+        pd.DataFrame({"amount": values}),
+        options=ProfileOptions(include_quantiles=False),
+    ).get_column("amount")
+
+    assert column.statistics.mean == pytest.approx(9.5e307)
+    assert column.statistics.median == pytest.approx(9.5e307)
+    assert column.statistics.missing_count == 2
+
+
 @pytest.mark.parametrize("dtype,base", [("Int64", -(2**63)), ("UInt64", 2**63)])
 def test_nullable_integer_skew_with_large_adjacent_values(dtype, base):
     values = pd.Series([base + 1, base + 2, base + 3], dtype=dtype)
-    statistics = inspect(pd.DataFrame({"amount": values})).get_column("amount").statistics
+    control = pd.Series([1, 2, 3], dtype=dtype)
+    column = inspect(pd.DataFrame({"amount": values})).get_column("amount")
+    expected = inspect(pd.DataFrame({"amount": control})).get_column("amount")
+    statistics = column.statistics
 
     assert int(statistics.minimum) == base + 1
     assert int(statistics.maximum) == base + 3
-    # Older pandas returns zero when the three integers round to the same float.
-    skew = values.skew()
-    assert statistics.skewness == (None if pd.isna(skew) else skew)
+    assert statistics.standard_deviation == pytest.approx(expected.statistics.standard_deviation)
+    assert statistics.skewness == pytest.approx(expected.statistics.skewness)
+    assert statistics.skewness == pytest.approx(0.0)
+    assert all(w.code != "high_skew" for w in column.warnings)
 
 
 def test_nullable_integer_finite_skew_preserves_warning():
@@ -202,6 +273,238 @@ def test_nullable_integer_finite_skew_preserves_warning():
 
     assert column.statistics.skewness == pytest.approx(values.skew())
     assert any(w.code == "high_skew" for w in column.warnings)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "base"),
+    [
+        pytest.param("Int64", 2**53, id="Int64-pos-2p53"),
+        pytest.param("Int64", 2**62, id="Int64-pos-2p62"),
+        pytest.param("Int64", -(2**62), id="Int64-neg-2p62"),
+        pytest.param("Int64", -(2**63), id="Int64-min-int64"),
+        pytest.param("UInt64", 2**63, id="UInt64-pos-2p63"),
+        pytest.param("UInt64", 2**64 - 5, id="UInt64-near-max"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("offsets", "expected_tail"),
+    [
+        pytest.param([0] * 30 + [1, 2, 3, 4], "large values", id="right-skew"),
+        pytest.param([0, 1, 2, 3] + [4] * 30, "small values", id="left-skew"),
+    ],
+)
+@pytest.mark.parametrize(
+    "missing_tail",
+    [
+        pytest.param([], id="no-nulls"),
+        pytest.param([pd.NA, pd.NA], id="with-nulls"),
+    ],
+)
+def test_nullable_large_offset_integer_skewness_and_warning_match_control(
+    dtype, base, offsets, expected_tail, missing_tail
+):
+    shifted = pd.Series([base + n for n in offsets] + missing_tail, dtype=dtype)
+    control = pd.Series(list(offsets) + missing_tail, dtype=dtype)
+
+    context = inspect(pd.DataFrame({"revenue": shifted}))
+    expected_context = inspect(pd.DataFrame({"revenue": control}))
+    column = context.get_column("revenue")
+    expected = expected_context.get_column("revenue")
+    stats = column.statistics
+    expected_stats = expected.statistics
+
+    assert column.semantic.role == expected.semantic.role == "measure"
+    assert int(stats.minimum) == base + min(offsets)
+    assert int(stats.maximum) == base + max(offsets)
+    serialized_stats = context.to_dict(include_values=True)["columns"][0]["statistics"]
+    assert serialized_stats["minimum"] == base + min(offsets)
+    assert serialized_stats["maximum"] == base + max(offsets)
+    assert stats.missing_count == expected_stats.missing_count == len(missing_tail)
+    assert stats.missing_rate == pytest.approx(expected_stats.missing_rate)
+    assert stats.distinct_count == expected_stats.distinct_count == 5
+    assert stats.distinct_rate == pytest.approx(expected_stats.distinct_rate)
+    assert stats.zero_count == 0
+    assert stats.negative_count == (len(offsets) if base < 0 else 0)
+    assert stats.mean is not None
+    assert stats.median is not None
+    assert set(stats.quantiles) == {"0.25", "0.5", "0.75"}
+    assert [(int(val), count) for val, count in stats.top_values] == [
+        (base + int(val), count) for val, count in expected_stats.top_values
+    ]
+    assert stats.top_frequencies == expected_stats.top_frequencies
+    assert stats.standard_deviation == pytest.approx(expected_stats.standard_deviation)
+    assert stats.skewness == pytest.approx(expected_stats.skewness)
+
+    warning = next(w for w in column.warnings if w.code == "high_skew")
+    expected_warning = next(w for w in expected.warnings if w.code == "high_skew")
+    assert warning in context.warnings
+    assert warning.severity == expected_warning.severity == "low"
+    assert warning.message == expected_warning.message
+    assert expected_tail in warning.implication
+    assert warning.implication == expected_warning.implication
+    assert warning.recommendation == expected_warning.recommendation
+    assert warning.evidence[0].details["skewness"] == pytest.approx(
+        expected_warning.evidence[0].details["skewness"]
+    )
+    if expected_tail == "large values":
+        total_metric = next(m for m in context.metrics if m.name == "total_revenue")
+        assert any("highly skewed" in caveat for caveat in total_metric.caveats)
+    assert "Highly skewed measure" in context.to_markdown()
+    assert f"revenue has skewness {stats.skewness:.2f}." in context.to_context()
+
+
+@pytest.mark.parametrize(
+    ("series", "control_series", "expected_min", "expected_max"),
+    [
+        pytest.param(
+            pd.Series([2**62 + n for n in [0] * 30 + [1, 2, 3, 4]], dtype="int64"),
+            pd.Series([0] * 30 + [1, 2, 3, 4], dtype="int64"),
+            2**62,
+            2**62 + 4,
+            id="int64-pos",
+        ),
+        pytest.param(
+            pd.Series([-(2**62) + n for n in [0] * 30 + [1, 2, 3, 4]], dtype="int64"),
+            pd.Series([0] * 30 + [1, 2, 3, 4], dtype="int64"),
+            -(2**62),
+            -(2**62) + 4,
+            id="int64-neg",
+        ),
+        pytest.param(
+            pd.Series([-(2**63) + n for n in [0, 1, 2, 3] + [4] * 30], dtype="int64"),
+            pd.Series([0, 1, 2, 3] + [4] * 30, dtype="int64"),
+            -(2**63),
+            -(2**63) + 4,
+            id="int64-min-left-skew",
+        ),
+        pytest.param(
+            pd.Series([2**63 + n for n in [0] * 30 + [1, 2, 3, 4]], dtype="uint64"),
+            pd.Series([0] * 30 + [1, 2, 3, 4], dtype="uint64"),
+            2**63,
+            2**63 + 4,
+            id="uint64-pos",
+        ),
+        pytest.param(
+            pd.Series([(2**64 - 5) + n for n in [0] * 30 + [1, 2, 3, 4]], dtype="uint64"),
+            pd.Series([0] * 30 + [1, 2, 3, 4], dtype="uint64"),
+            2**64 - 5,
+            2**64 - 1,
+            id="uint64-near-max",
+        ),
+        pytest.param(
+            pd.Series(
+                pd.arrays.SparseArray(
+                    [2**62 + n for n in [0] * 30 + [1, 2, 3, 4]],
+                    fill_value=2**62,
+                )
+            ),
+            pd.Series([0] * 30 + [1, 2, 3, 4], dtype="int64"),
+            2**62,
+            2**62 + 4,
+            id="sparse-int64-pos",
+        ),
+        pytest.param(
+            pd.Series([2**62 + n for n in [0] * 30 + [1, 2, 3, 4]] + [None], dtype=object),
+            pd.Series([0] * 30 + [1, 2, 3, 4] + [None], dtype=object),
+            2**62,
+            2**62 + 4,
+            id="object-int-pos",
+        ),
+        pytest.param(
+            pd.Series([2**63 + n for n in [0] * 30 + [1, 2, 3, 4]] + [None], dtype=object),
+            pd.Series([0] * 30 + [1, 2, 3, 4] + [None], dtype=object),
+            2**63,
+            2**63 + 4,
+            id="object-uint-pos",
+        ),
+    ],
+)
+def test_ordinary_sparse_and_object_large_offset_integers_preserve_skewness(
+    series, control_series, expected_min, expected_max
+):
+    no_quantiles = ProfileOptions(include_quantiles=False)
+    column = inspect(pd.DataFrame({"revenue": series}), options=no_quantiles).get_column("revenue")
+    expected = inspect(
+        pd.DataFrame({"revenue": control_series}), options=no_quantiles
+    ).get_column("revenue")
+
+    assert column.semantic.role == "measure"
+    assert int(column.statistics.minimum) == expected_min
+    assert int(column.statistics.maximum) == expected_max
+    assert dict(column.statistics.quantiles) == {}
+    assert column.statistics.standard_deviation == pytest.approx(
+        expected.statistics.standard_deviation
+    )
+    assert column.statistics.skewness == pytest.approx(expected.statistics.skewness)
+    assert any(w.code == "high_skew" for w in column.warnings)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "base", "supports_na"),
+    [
+        ("int64", 2**62, False),
+        ("int64", -(2**62), False),
+        ("uint64", 2**63, False),
+        ("Int64", 2**62, True),
+        ("Int64", -(2**63), True),
+        ("UInt64", 2**63, True),
+    ],
+)
+def test_large_offset_integer_constant_short_and_symmetric_controls(dtype, base, supports_na):
+    na_tail = [pd.NA, pd.NA] if supports_na else []
+
+    constant = pd.Series([base, base, base] + na_tail, dtype=dtype)
+    constant_col = inspect(pd.DataFrame({"revenue": constant})).get_column("revenue")
+    assert int(constant_col.statistics.minimum) == base
+    assert int(constant_col.statistics.maximum) == base
+    assert constant_col.statistics.standard_deviation == pytest.approx(0.0)
+    assert constant_col.statistics.skewness is None
+    assert all(w.code != "high_skew" for w in constant_col.warnings)
+
+    single = pd.Series([base] + na_tail, dtype=dtype)
+    single_col = inspect(pd.DataFrame({"revenue": single})).get_column("revenue")
+    assert int(single_col.statistics.minimum) == base
+    assert int(single_col.statistics.maximum) == base
+    assert single_col.statistics.standard_deviation is None
+    assert single_col.statistics.skewness is None
+    assert all(w.code != "high_skew" for w in single_col.warnings)
+
+    pair = pd.Series([base, base + 2] + na_tail, dtype=dtype)
+    pair_col = inspect(pd.DataFrame({"revenue": pair})).get_column("revenue")
+    assert int(pair_col.statistics.minimum) == base
+    assert int(pair_col.statistics.maximum) == base + 2
+    assert pair_col.statistics.standard_deviation == pytest.approx(math.sqrt(2.0))
+    assert pair_col.statistics.skewness is None
+    assert all(w.code != "high_skew" for w in pair_col.warnings)
+
+    symmetric = pd.Series([base + n for n in (0, 1, 2, 3, 4)] + na_tail, dtype=dtype)
+    symmetric_control = pd.Series([0, 1, 2, 3, 4] + na_tail, dtype=dtype)
+    symmetric_col = inspect(pd.DataFrame({"revenue": symmetric})).get_column("revenue")
+    symmetric_expected = inspect(pd.DataFrame({"revenue": symmetric_control})).get_column("revenue")
+    assert int(symmetric_col.statistics.minimum) == base
+    assert int(symmetric_col.statistics.maximum) == base + 4
+    assert symmetric_col.statistics.standard_deviation == pytest.approx(
+        symmetric_expected.statistics.standard_deviation
+    )
+    assert symmetric_col.statistics.skewness == pytest.approx(0.0)
+    assert symmetric_col.statistics.skewness == pytest.approx(
+        symmetric_expected.statistics.skewness
+    )
+    assert all(w.code != "high_skew" for w in symmetric_col.warnings)
+
+
+def test_insufficient_finite_observations_with_infinities_and_nulls_omit_skewness():
+    inf_pair = pd.Series([float("inf"), 1.0, 2.0, float("-inf")], dtype="float64")
+    inf_col = inspect(pd.DataFrame({"revenue": inf_pair})).get_column("revenue")
+    assert inf_col.statistics.minimum == pytest.approx(1.0)
+    assert inf_col.statistics.maximum == pytest.approx(2.0)
+    assert inf_col.statistics.skewness is None
+    assert all(w.code != "high_skew" for w in inf_col.warnings)
+
+    all_na = pd.Series([pd.NA, pd.NA, pd.NA], dtype="Int64")
+    all_na_col = inspect(pd.DataFrame({"revenue": all_na})).get_column("revenue")
+    assert all_na_col.statistics.skewness is None
+    assert all(w.code != "high_skew" for w in all_na_col.warnings)
 
 
 @pytest.mark.parametrize("values,mean", [([1, 2, 3, pd.NA], 2.0), ([1.5, 2.5, pd.NA], 2.0), ([1, 3.0, pd.NA], 2.0)])

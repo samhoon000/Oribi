@@ -3,6 +3,7 @@
 import math
 from collections.abc import Sequence
 from functools import cache
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -524,6 +525,17 @@ def _col_observed_count(col: ColumnContext, row_count: int) -> int:
     return max(0, row_count - col.statistics.missing_count)
 
 
+class MetricGrainFacts(NamedTuple):
+    """Observed entity-grain measure facts and any scan skip or support limits."""
+
+    entity_constant_measures: frozenset[tuple[str, str]] = frozenset()
+    entity_determinants: frozenset[tuple[str, str]] = frozenset()
+    multi_parent_pairs: frozenset[tuple[str, str]] = frozenset()
+    partially_covered_measures: frozenset[str] = frozenset()
+    skip_reason: str | None = None
+    unchecked_measures: tuple[tuple[str, str], ...] = ()
+
+
 def detect_metric_grain_facts(
     frame: pd.DataFrame,
     columns: Sequence[ColumnContext],
@@ -531,22 +543,22 @@ def detect_metric_grain_facts(
     *,
     max_rows: int = 100_000,
     max_columns: int = 40,
-) -> tuple[
-    frozenset[tuple[str, str]],
-    frozenset[tuple[str, str]],
-    frozenset[tuple[str, str]],
-    frozenset[str],
-]:
+) -> MetricGrainFacts:
     """Collect entity-grain measure constancy, determinant, and multi-parent facts.
 
     Also returns the names of measures that repeat under an incomplete
-    determinant, so losing the determinant cannot trigger a raw sum.
+    determinant, so losing the determinant cannot trigger a raw sum, along
+    with any scan skip reason or per-measure support limits.
     """
     row_count = len(frame)
-    if row_count == 0 or row_count > max_rows or max_columns <= 0:
-        return frozenset(), frozenset(), frozenset(), frozenset()
+    if row_count == 0:
+        return MetricGrainFacts()
+    if row_count > max_rows:
+        return MetricGrainFacts(skip_reason="max_exact_rows")
+    if max_columns <= 0:
+        return MetricGrainFacts(skip_reason="zero_relationship_columns")
 
-    identifiers = sorted(
+    all_identifiers = sorted(
         (
             col
             for col in columns
@@ -555,13 +567,14 @@ def detect_metric_grain_facts(
             and _col_observed_count(col, row_count) > 0
         ),
         key=lambda col: col.name,
-    )[:max_columns]
+    )
+    identifiers = all_identifiers[:max_columns]
     repeating_ids = [
         col
         for col in identifiers
         if col.statistics.distinct_count < _col_observed_count(col, row_count)
     ]
-    additive_measures = sorted(
+    all_additive_measures = sorted(
         (
             col
             for col in columns
@@ -570,7 +583,20 @@ def detect_metric_grain_facts(
             and any(rec.operation == "SUM" and rec.disposition == "recommended" for rec in col.recommendations)
         ),
         key=lambda col: col.name,
-    )[:max_columns]
+    )
+    additive_measures = all_additive_measures[:max_columns]
+
+    unchecked_measures: dict[str, str] = {}
+    skipped_repeating_ids = any(
+        col.statistics.distinct_count < _col_observed_count(col, row_count)
+        for col in all_identifiers[max_columns:]
+    )
+    if skipped_repeating_ids:
+        for col in all_additive_measures:
+            unchecked_measures[col.name] = "max_relationship_columns"
+    elif repeating_ids:
+        for col in all_additive_measures[max_columns:]:
+            unchecked_measures[col.name] = "max_relationship_columns"
 
     entity_constant_measures: set[tuple[str, str]] = set()
     partially_covered_measures: set[str] = set()
@@ -593,6 +619,7 @@ def detect_metric_grain_facts(
                     .nunique()
                 )
             except (TypeError, ValueError):
+                unchecked_measures.setdefault(measure_col.name, "unsupported")
                 continue
             if not distinct_per_entity.empty and int(distinct_per_entity.max()) == 1:
                 if len(paired) == _col_observed_count(measure_col, row_count):
@@ -641,9 +668,11 @@ def detect_metric_grain_facts(
         if not parents_per_child.empty and int(parents_per_child.max()) > 1:
             multi_parent_pairs.add((parent_name, child_name))
 
-    return (
+    return MetricGrainFacts(
         frozenset(entity_constant_measures),
         frozenset(entity_determinants),
         frozenset(multi_parent_pairs),
         frozenset(partially_covered_measures),
+        None,
+        tuple(sorted(unchecked_measures.items())),
     )

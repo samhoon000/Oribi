@@ -1,6 +1,7 @@
 """Statistics for observed columns."""
 
 import math
+import warnings
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from fractions import Fraction
@@ -116,6 +117,43 @@ def _top_values(counts: pd.Series, limit: int) -> tuple[tuple[Any, int], ...]:
     return tuple(ranked)
 
 
+def _mean_without_overflow(sample: pd.Series) -> float:
+    """Mean of finite float64 values that stays finite when the sum overflows.
+
+    The plain reduction is kept whenever it stays finite. Only when adding the
+    observations overflows first, rescale by the largest magnitude so the
+    intermediate sum is bounded by the observation count instead.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        result = float(sample.mean())
+    if math.isfinite(result):
+        return result
+    peak = max((abs(float(value)) for value in sample), default=0.0)
+    if peak == 0.0:
+        return 0.0
+    return float((sample / peak).mean()) * peak
+
+
+def _median_without_overflow(sample: pd.Series) -> float:
+    """Median of finite float64 values that stays finite on huge inputs.
+
+    The plain reduction is kept whenever it stays finite. Only when averaging
+    the two middle values overflows first, halve each middle value before
+    adding them so the midpoint cannot overflow.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        result = float(sample.median())
+    if math.isfinite(result):
+        return result
+    ordered = sorted(float(value) for value in sample)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return ordered[middle - 1] / 2.0 + ordered[middle] / 2.0
+
+
 def profile_column(
     obs: ColumnObservation, row_count: int, top_k: int, include_quantiles: bool,
 ) -> tuple[StatisticsContext, bool]:
@@ -168,18 +206,35 @@ def profile_column(
                     # preserve small differences and avoid fixed-width overflow.
                     origin = int(minimum)
                     dispersion_sample = sample.map(lambda value: float(int(value) - origin))
+            if len(sample) and pd.api.types.is_float_dtype(sample.dtype):
+                # Mean and median add observations before dividing, so a sum
+                # of huge finite values can overflow even when the center is
+                # representable. Keep the plain reductions for every other
+                # dtype, where the float64 conversion cannot overflow.
+                mean = finite_or_none(_mean_without_overflow(sample))
+                median = finite_or_none(_median_without_overflow(sample))
+            else:
+                mean = finite_or_none(sample.mean()) if len(sample) else None
+                median = finite_or_none(sample.median()) if len(sample) else None
             values.update(
                 minimum=minimum,
                 maximum=maximum,
-                mean=finite_or_none(sample.mean()) if len(sample) else None,
-                median=finite_or_none(sample.median()) if len(sample) else None,
+                mean=mean,
+                median=median,
                 standard_deviation=finite_or_none(dispersion_sample.std()) if len(sample) > 1 else None,
             )
             values["zero_count"] = int((numeric == 0).sum())
             values["negative_count"] = int((numeric < 0).sum())
             if include_quantiles:
                 quantile_sample = sample
-                if minimum is not None and maximum is not None and pd.api.types.is_signed_integer_dtype(sample.dtype):
+                if len(sample) and isinstance(sample.iloc[0], Decimal):
+                    # Decimal interpolation cannot multiply by floating-point weights.
+                    quantile_sample = sample.astype("float64")
+                elif (
+                    minimum is not None
+                    and maximum is not None
+                    and pd.api.types.is_signed_integer_dtype(sample.dtype)
+                ):
                     itemsize = getattr(sample.dtype, "itemsize", 8)
                     signed_limit = 1 << (itemsize * 8 - 1)
                     # Interpolation subtracts the endpoints in the input dtype.
@@ -190,7 +245,7 @@ def profile_column(
                     if len(sample) else {}
                 )
             if len(sample) >= 3 and sample.nunique() > 1:
-                values["skewness"] = finite_or_none(sample.skew())
+                values["skewness"] = finite_or_none(dispersion_sample.skew())
     elif obs.logical_type == "temporal" and len(non_null):
         values["minimum"] = non_null.min()
         values["maximum"] = non_null.max()

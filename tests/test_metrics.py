@@ -372,6 +372,72 @@ def test_deduplicated_total_declares_grouping_column_dependencies():
     assert qty_payload["columns"] == ["quantity"]
 
 
+def test_deduplicated_metrics_declare_grouping_column_dependencies():
+    """A deduplicated metric must advertise every column its SQL groups by.
+
+    Consumers may project exactly ``MetricDefinition.columns`` before running
+    the SQL. The per-entity and ratio builders used to advertise only the
+    measure (and entity) columns while their SQL also read the determinant,
+    so such a projection failed with ``no such column: order_id``.
+    """
+    frame = pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2, 3, 3],
+            "customer_id": ["a", "a", "a", "a", "b", "b"],
+            "revenue": [10.0, 10.0, 20.0, 20.0, 30.0, 30.0],
+            "profit": [2.0, 2.0, 6.0, 6.0, 12.0, 12.0],
+            "quantity": [1, 2, 3, 4, 5, 6],
+        }
+    )
+    context = inspect(frame)
+
+    # Shared determinant: both sides deduplicate at order_id grain.
+    margin = _metric(context, "profit_margin")
+    assert margin.columns == ("profit", "revenue", "order_id")
+    assert "GROUP BY order_id" in margin.sql
+    assert _eval_sql(frame[list(margin.columns)], margin.sql) == pytest.approx(20.0 / 60.0)
+    assert _eval_sql(frame, margin.sql) == pytest.approx(20.0 / 60.0)
+
+    # Shared determinant, with a distinct-entity divisor.
+    rpc = _metric(context, "revenue_per_customer")
+    assert rpc.columns == ("revenue", "customer_id", "order_id")
+    assert _eval_sql(frame[list(rpc.columns)], rpc.sql) == pytest.approx(30.0)
+    assert _eval_sql(frame, rpc.sql) == pytest.approx(30.0)
+
+    # One-sided determinant: only the numerator is deduplicated.
+    rpu = _metric(context, "revenue_per_unit")
+    assert rpu.columns == ("revenue", "quantity", "order_id")
+    assert _eval_sql(frame[list(rpu.columns)], rpu.sql) == pytest.approx(60.0 / 21.0)
+    assert _eval_sql(frame, rpu.sql) == pytest.approx(60.0 / 21.0)
+
+    payload = {metric["name"]: metric for metric in context.to_dict()["metrics"]}
+    assert payload["profit_margin"]["columns"] == ["profit", "revenue", "order_id"]
+    assert payload["revenue_per_customer"]["columns"] == [
+        "revenue",
+        "customer_id",
+        "order_id",
+    ]
+    assert payload["revenue_per_unit"]["columns"] == ["revenue", "quantity", "order_id"]
+    for metric in context.metrics:
+        assert len(metric.columns) == len(set(metric.columns)), metric.name
+
+
+def test_plain_measure_ratio_declares_only_its_measures():
+    """Control: without deduplication a ratio still advertises just its measures."""
+    frame = pd.DataFrame(
+        {
+            "order_id": [1, 2, 3],
+            "revenue": [10.0, 20.0, 30.0],
+            "profit": [2.0, 6.0, 12.0],
+        }
+    )
+    margin = _metric(inspect(frame), "profit_margin")
+
+    assert margin.columns == ("profit", "revenue")
+    assert "GROUP BY" not in margin.sql
+    assert _eval_sql(frame[list(margin.columns)], margin.sql) == pytest.approx(20.0 / 60.0)
+
+
 def test_average_order_value_excludes_rows_missing_entity_id():
     frame = pd.DataFrame(
         {
@@ -768,3 +834,221 @@ def test_compact_context_preserves_escaped_double_quote_in_metric_identifier():
     assert rendered in compact
     assert 'SUM("col""quote")' in compact
     assert len(compact) <= 5000
+
+
+def test_skipped_metric_grain_scan_discloses_unverified_sums_and_preserves_controls():
+    df = pd.DataFrame(
+        {
+            "line_id": [1, 2, 3, 4],
+            "order_id": [1, 1, 2, 2],
+            "revenue": [10.0, 10.0, 20.0, 20.0],
+        }
+    )
+
+    for completed_options in (
+        ProfileOptions(),
+        ProfileOptions(max_exact_rows=4),
+        ProfileOptions(max_exact_rows=4, max_relationships=0),
+        ProfileOptions(max_relationship_columns=2),
+    ):
+        completed = inspect(df, options=completed_options)
+        assert completed.profile.duplicate_row_count == 0
+        total = _metric(completed, "total_revenue")
+        aov = _metric(completed, "average_order_value")
+        assert total.columns == ("revenue", "order_id")
+        assert _eval_sql(df, total.sql) == pytest.approx(30.0)
+        assert _eval_sql(df, aov.sql) == pytest.approx(15.0)
+        assert any("deduplicates" in c for c in total.caveats)
+        assert not any("not checked" in c for c in total.caveats)
+        assert any("deduplicates" in c for c in aov.caveats)
+        assert not any("not checked" in c for c in aov.caveats)
+
+    baseline_schema_keys = set(inspect(df).to_dict()["metrics"][0].keys())
+
+    row_limited = inspect(df, options=ProfileOptions(max_exact_rows=3))
+    assert row_limited.profile.duplicate_row_count == 0
+    assert row_limited.profile.exact_row_limit_exceeded is True
+    row_total = _metric(row_limited, "total_revenue")
+    row_aov = _metric(row_limited, "average_order_value")
+    assert row_total.sql == "SUM(revenue)"
+    assert row_total.columns == ("revenue",)
+    assert _eval_sql(df, row_total.sql) == pytest.approx(60.0)
+    assert row_aov.sql == "SUM(revenue) / NULLIF(COUNT(DISTINCT order_id), 0)"
+    assert row_aov.columns == ("revenue", "order_id")
+    assert _eval_sql(df, row_aov.sql) == pytest.approx(30.0)
+    assert any(
+        "not checked for repeated higher-grain values" in c and "max_exact_rows" in c
+        for c in row_total.caveats
+    ), row_total.caveats
+    assert any(
+        "not checked for repeated higher-grain values" in c and "max_exact_rows" in c
+        for c in row_aov.caveats
+    ), row_aov.caveats
+    assert _metric(row_limited, "line_count").caveats == ()
+    assert _metric(row_limited, "order_count").caveats == ()
+
+    row_dict = row_limited.to_dict()
+    assert row_dict["schema_version"] == "2"
+    row_total_dict = next(m for m in row_dict["metrics"] if m["name"] == "total_revenue")
+    assert set(row_total_dict.keys()) == baseline_schema_keys
+    assert any("max_exact_rows" in c for c in row_total_dict["caveats"])
+    assert "not checked for repeated higher-grain values" in row_limited.to_markdown()
+    assert "not checked for repeated higher-grain values" in row_limited.to_context()
+
+    col_zero = inspect(df, options=ProfileOptions(max_relationship_columns=0))
+    assert col_zero.profile.duplicate_row_count == 0
+    assert col_zero.profile.exact_row_limit_exceeded is False
+    zero_total = _metric(col_zero, "total_revenue")
+    zero_aov = _metric(col_zero, "average_order_value")
+    assert zero_total.sql == "SUM(revenue)"
+    assert zero_total.columns == ("revenue",)
+    assert _eval_sql(df, zero_total.sql) == pytest.approx(60.0)
+    assert zero_aov.sql == "SUM(revenue) / NULLIF(COUNT(DISTINCT order_id), 0)"
+    assert _eval_sql(df, zero_aov.sql) == pytest.approx(30.0)
+    assert any(
+        "not checked for repeated higher-grain values" in c
+        and "max_relationship_columns is 0" in c
+        for c in zero_total.caveats
+    ), zero_total.caveats
+    assert any(
+        "not checked for repeated higher-grain values" in c
+        and "max_relationship_columns is 0" in c
+        for c in zero_aov.caveats
+    ), zero_aov.caveats
+    assert _metric(col_zero, "line_count").caveats == ()
+    assert _metric(col_zero, "order_count").caveats == ()
+
+
+def test_completed_negative_and_unique_identifier_controls_emit_no_skipped_caveat():
+    for values, expected_sum in (
+        ([10.0, 15.0, 20.0, 25.0], 70.0),
+        ([10.0, 20.0, 10.0, 20.0], 60.0),
+    ):
+        additive_df = pd.DataFrame(
+            {
+                "line_id": [1, 2, 3, 4],
+                "order_id": [1, 1, 2, 2],
+                "revenue": values,
+            }
+        )
+        completed_neg = inspect(additive_df)
+        assert completed_neg.profile.duplicate_row_count == 0
+        neg_total = _metric(completed_neg, "total_revenue")
+        neg_aov = _metric(completed_neg, "average_order_value")
+        assert neg_total.sql == "SUM(revenue)"
+        assert _eval_sql(additive_df, neg_total.sql) == pytest.approx(expected_sum)
+        assert neg_total.caveats == ()
+        assert neg_aov.caveats == ()
+
+        direct_metrics = infer_metrics(completed_neg.columns, row_count=len(additive_df))
+        assert next(m for m in direct_metrics if m.name == "total_revenue").caveats == ()
+
+    unique_ids_df = pd.DataFrame(
+        {
+            "line_id": [1, 2, 3, 4],
+            "order_id": [101, 102, 103, 104],
+            "revenue": [10.0, 10.0, 20.0, 20.0],
+        }
+    )
+    for bounded in (
+        ProfileOptions(max_exact_rows=3),
+        ProfileOptions(max_relationship_columns=0),
+        ProfileOptions(max_relationship_columns=1),
+    ):
+        unique_ctx = inspect(unique_ids_df, options=bounded)
+        assert _metric(unique_ctx, "total_revenue").caveats == ()
+        assert _metric(unique_ctx, "average_order_value").caveats == ()
+
+
+def test_partial_column_limit_and_unsupported_identifiers_disclose_only_affected_measures():
+    truncated_id_df = pd.DataFrame(
+        {
+            "line_id": [1, 2, 3, 4],
+            "order_id": [1, 1, 2, 2],
+            "revenue": [10.0, 10.0, 20.0, 20.0],
+            "quantity": [1, 2, 3, 4],
+        }
+    )
+    truncated_id_ctx = inspect(truncated_id_df, options=ProfileOptions(max_relationship_columns=1))
+    assert any(
+        "max_relationship_columns limited the metric-grain scan" in c
+        for c in _metric(truncated_id_ctx, "total_revenue").caveats
+    )
+    assert any(
+        "revenue was not checked" in c
+        for c in _metric(truncated_id_ctx, "revenue_per_unit").caveats
+    )
+
+    partial_measure_df = pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2],
+            "profit": [2.0, 3.0, 4.0, 5.0],
+            "revenue": [10.0, 10.0, 20.0, 20.0],
+        }
+    )
+    partial_ctx = inspect(partial_measure_df, options=ProfileOptions(max_relationship_columns=1))
+    assert _metric(partial_ctx, "total_profit").caveats == ()
+    assert any(
+        "max_relationship_columns limited the metric-grain scan" in c
+        for c in _metric(partial_ctx, "total_revenue").caveats
+    )
+    margin_caveats = _metric(partial_ctx, "profit_margin").caveats
+    assert any("revenue was not checked" in c for c in margin_caveats)
+    assert not any("profit was not checked" in c for c in margin_caveats)
+
+    unsupported_repeat_df = pd.DataFrame(
+        {
+            "line_id": [1, 2, 3, 4],
+            "order_id": [[1], [1], [2], [2]],
+            "revenue": [10.0, 10.0, 20.0, 20.0],
+        }
+    )
+    unsupported_ctx = inspect(unsupported_repeat_df)
+    assert any(
+        "could not be checked for repeated higher-grain values" in c
+        for c in _metric(unsupported_ctx, "total_revenue").caveats
+    )
+
+    unsupported_unique_df = pd.DataFrame(
+        {
+            "line_id": [1, 2, 3, 4],
+            "order_id": [[1], [2], [3], [4]],
+            "revenue": [10.0, 10.0, 20.0, 20.0],
+        }
+    )
+    assert _metric(inspect(unsupported_unique_df), "total_revenue").caveats == ()
+
+def test_deduplicated_per_entity_average_excludes_unassigned_groups():
+    frame = pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2, 3, 3],
+            "customer_id": ["a", None, "b", "b", None, None],
+            "revenue": [10.0, 10.0, 20.0, 20.0, 300.0, 300.0],
+        }
+    )
+    context = inspect(frame)
+    rpc = _metric(context, "revenue_per_customer")
+    total_rev = _metric(context, "total_revenue")
+
+    assert _eval_sql(frame, rpc.sql) == pytest.approx(15.0)
+    assert _eval_sql(frame, total_rev.sql) == pytest.approx(330.0)
+    assert any("exclude" in caveat.lower() for caveat in rpc.caveats), rpc.caveats
+
+def test_deduplicated_per_entity_average_complete_mapping_control():
+    frame = pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2, 3, 3],
+            "customer_id": ["a", "a", "b", "b", "c", "c"],
+            "revenue": [10.0, 10.0, 20.0, 20.0, 30.0, 30.0],
+        }
+    )
+    context = inspect(frame)
+    rpc = _metric(context, "revenue_per_customer")
+    total_rev = _metric(context, "total_revenue")
+
+    assert _eval_sql(frame, rpc.sql) == pytest.approx(20.0)
+    assert _eval_sql(frame, total_rev.sql) == pytest.approx(60.0)
+    assert not any(
+        "deduplicated" in caveat.lower() and "excluded" in caveat.lower()
+        for caveat in rpc.caveats
+    ), rpc.caveats
