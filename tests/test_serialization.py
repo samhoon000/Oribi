@@ -319,6 +319,29 @@ def test_default_exports_succeed_for_circular_samples_and_omit_values():
     assert json.loads(context.to_json()) == exported
 
 
+@pytest.mark.parametrize(
+    ("sample", "expected"),
+    [
+        ([pd.NA, pd.NaT, "<NA>", "NaT"], [None, None, "<NA>", "NaT"]),
+        (
+            {"missing": pd.NA, "missing_time": pd.NaT, "labels": ["<NA>", "NaT"]},
+            {"missing": None, "missing_time": None, "labels": ["<NA>", "NaT"]},
+        ),
+    ],
+    ids=["list", "mapping"],
+)
+def test_structured_samples_export_pandas_missing_scalars_as_null(sample, expected):
+    context = inspect(pd.DataFrame({"payload": [sample]}))
+
+    exported = context.to_dict(include_values=True)
+    assert exported["columns"][0]["statistics"]["top_values"] == [[expected, 1]]
+    assert json.loads(context.to_json(include_values=True)) == exported
+
+    default_export = context.to_dict()
+    assert default_export["columns"][0]["statistics"]["top_values"] == []
+    assert json.loads(context.to_json()) == default_export
+
+
 def test_context_limit_keeps_an_explicit_marker_for_long_labels():
     import pandas as pd
 
