@@ -75,7 +75,13 @@ def _profile_index(df: pd.DataFrame) -> IndexContext | None:
         index_frame = index.to_frame(index=False)
     missing = int(index_frame.isna().any(axis=1).sum())
     try:
-        unique = int(index.nunique()) if index.nlevels == 1 else int(len(index.unique()))
+        if isinstance(index, pd.MultiIndex) and index.nlevels == 1:
+            # Code -1 denotes missing; counting observed codes avoids decoding
+            # labels, which can round large integers when it fills in NaN.
+            codes = index.codes[0]
+            unique = int(pd.Index(codes[codes >= 0]).nunique())
+        else:
+            unique = int(index.nunique()) if index.nlevels == 1 else int(len(index.unique()))
     except (TypeError, ValueError):
         if index.nlevels == 1 and pd.api.types.is_object_dtype(index.dtype):
             # Series can compare unhashable labels without the Index's hash table.

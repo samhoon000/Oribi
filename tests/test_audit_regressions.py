@@ -205,8 +205,12 @@ def test_named_and_multiindex_are_exported_as_index_metadata():
         (["a", None, "a", None], 1, 2, 2, False),
     ],
 )
-def test_single_index_missing_values_are_not_duplicates(values, unique, duplicates, missing, is_unique):
-    index = pd.Index(values, name="record_id")
+@pytest.mark.parametrize("multi_index", [False, True], ids=["index", "one-level-multiindex"])
+def test_single_index_missing_values_are_not_duplicates(values, unique, duplicates, missing, is_unique, multi_index):
+    index = (
+        pd.MultiIndex.from_arrays([values], names=["record_id"])
+        if multi_index else pd.Index(values, name="record_id")
+    )
     profile = inspect(pd.DataFrame({"value": range(len(values))}, index=index)).profile.index
     assert profile.unique_count == unique
     assert profile.duplicate_count == duplicates
@@ -242,9 +246,21 @@ def test_unhashable_single_index_labels_are_profiled(values, unique, duplicates,
     assert context.to_dict()["profile"]["index"]["unique_count"] == unique
 
 
+def test_single_level_multiindex_preserves_large_integer_distinct_counts():
+    index = pd.MultiIndex(
+        levels=[[2**53, 2**53 + 1, 42]], codes=[[0, 1, -1, -1]], names=["record_id"]
+    )
+    profile = inspect(pd.DataFrame({"value": [1, 2, 3, 4]}, index=index)).profile.index
+    assert profile.unique_count == 2
+    assert profile.duplicate_count == 1
+    assert profile.missing_count == 2
+    assert profile.is_unique is False
+
+
 def test_multiindex_missing_values_are_counted_like_pandas():
     multi = pd.MultiIndex.from_tuples([("A", None), ("A", None), ("B", 1)], names=["group", "period"])
     profile = inspect(pd.DataFrame({"value": [1.0, 2.0, 3.0]}, index=multi)).profile.index
+    assert profile.unique_count == 2
     assert profile.duplicate_count == 1
     assert profile.missing_count == 2
     assert profile.is_unique is False
