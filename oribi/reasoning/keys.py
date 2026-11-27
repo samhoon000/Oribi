@@ -87,13 +87,14 @@ def detect_candidate_keys(
             columns = tuple(sorted(pair))
             try:
                 pair_frame = frame[list(columns)]
-                distinct_pairs = int(pair_frame.drop_duplicates().shape[0])
-                missing_count = int(pair_frame.isna().any(axis=1).sum())
+                complete_pairs = pair_frame.dropna()
+                missing_count = row_count - len(complete_pairs)
+                distinct_pairs = int(complete_pairs.drop_duplicates().shape[0])
             except (TypeError, ValueError):
                 continue
             rate = distinct_pairs / row_count
             if rate >= _MIN_COMPOSITE_UNIQUENESS:
-                duplicate_count = row_count - distinct_pairs
+                duplicate_count = row_count - missing_count - distinct_pairs
                 verified = duplicate_count == 0 and missing_count == 0
                 confidence = rate * sample_support
                 evidence = Evidence(

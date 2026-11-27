@@ -161,17 +161,30 @@ def test_duplicate_composite_values_are_not_a_candidate():
     assert not [key for key in _keys(frame) if key.kind == "composite"]
 
 
-def test_composite_null_handling_preserves_drop_duplicates_semantics():
-    unique_pairs = pd.DataFrame({
-        "order_id": [1001, 1001, 1002, 1002],
-        "product_id": [None, "A", None, "B"],
-    })
-    duplicate_null_pair = pd.DataFrame({
-        "order_id": [1001, 1001, 1002, 1002],
-        "product_id": [None, None, "A", "B"],
-    })
-    assert ("order_id", "product_id") in {key.columns for key in _keys(unique_pairs)}
-    assert ("order_id", "product_id") not in {key.columns for key in _keys(duplicate_null_pair)}
+@pytest.mark.parametrize("case", ["incomplete", "duplicate", "mixed", "unique"])
+def test_composite_key_counts_missing_and_collisions_separately(case):
+    from itertools import product
+
+    frame = pd.DataFrame(product("ABCD", "0123456789"), columns=["batch", "slot"])
+    if case == "incomplete":
+        frame.loc[[0, 1], "batch"] = None
+        frame.loc[1, "slot"] = "0"
+    elif case == "duplicate":
+        frame.loc[1, "slot"] = "0"
+    elif case == "mixed":
+        frame.loc[0, "batch"] = None
+        frame.loc[2, "slot"] = "1"
+
+    context = inspect(frame)
+    key = next(key for key in context.candidate_keys if key.columns == ("batch", "slot"))
+    expected = {"incomplete": (0.95, 0, 2, False), "duplicate": (0.975, 1, 0, False),
+                "mixed": (0.95, 1, 1, False), "unique": (1.0, 0, 0, True)}[case]
+    assert (key.uniqueness_rate, key.duplicate_count, key.missing_count, key.verified_unique) == expected
+    details = key.evidence[0].details
+    assert (details["uniqueness_rate"], details["duplicate_count"], details["missing_count"],
+            details["verified_unique"]) == expected
+    assert details["distinct_pairs"] == 40 * expected[0]
+    assert context.grain.status == ("estimated" if case == "unique" else "undetermined")
 
 
 def test_composite_search_is_bounded_by_max_key_columns():

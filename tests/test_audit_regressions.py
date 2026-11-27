@@ -81,7 +81,9 @@ def test_near_unique_single_column_is_not_rendered_as_identifying_in_markdown():
 
 
 def test_missing_key_components_are_not_verified():
-    context = inspect(pd.DataFrame({"order_id": [1, 1, 2, 2], "item": [None, "a", None, "b"]}))
+    frame = pd.DataFrame({"order_id": [i // 10 for i in range(40)], "item": [str(i % 10) for i in range(40)]})
+    frame.loc[[0, 1], "item"] = None
+    context = inspect(frame)
     pair = next(key for key in context.candidate_keys if key.kind == "composite")
     assert pair.missing_count == 2
     assert not pair.verified_unique
