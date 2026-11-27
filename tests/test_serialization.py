@@ -870,6 +870,22 @@ def test_numpy_datetime_samples_keep_nanosecond_precision():
 def test_numpy_datetime_nat_serializes_as_none():
     assert _normalize(np.datetime64("NaT", "ns")) is None
 
+def test_numpy_timedelta_samples_keep_nanosecond_precision():
+    samples = [
+        np.timedelta64(1251, "ns"),
+        np.timedelta64(1251, "us"),
+    ]
+    context = inspect(pd.DataFrame({"samples": [[value] for value in samples]}))
+    exported = context.to_dict(include_values=True)
+    top_values = exported["columns"][0]["statistics"]["top_values"]
+    values = [sample[0][0] for sample in top_values]
+    assert values == ["PT0.000001251S", "PT0.001251S"]
+    assert json.loads(context.to_json(include_values=True)) == exported
+    assert _normalize(np.timedelta64("NaT", "ns")) is None
+    assert _normalize(np.int64(7)) == 7
+    for default in (context.to_dict(), json.loads(context.to_json())):
+        assert default["columns"][0]["statistics"]["top_values"] == []
+
 
 def test_truncated_context_preserves_warnings_for_wide_schema():
     df = pd.DataFrame({f"feature_{i:02d}": [1, 1, 1, 1] for i in range(20)})

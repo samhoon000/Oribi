@@ -9,6 +9,7 @@ from numbers import Integral, Real
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from ..models.evidence import CategoricalContext
 
@@ -23,6 +24,20 @@ def _circular_reference_error(path: str) -> _CircularReferenceError:
         f"Cannot export circular reference{location}: the sampled values contain a cycle. "
         "Retry with include_values=False (the default) to omit sampled values."
     )
+
+
+def _timedelta_iso8601(value: np.timedelta64) -> str | None:
+    if np.isnat(value):
+        return None
+    nanoseconds = value.astype("timedelta64[ns]").astype("int64")
+    if np.timedelta64(nanoseconds, "ns").astype(value.dtype) != value:
+        # Durations outside the int64 nanosecond range still need a faithful
+        # ISO 8601 representation; pandas handles those without overflow.
+        return pd.Timedelta(value).isoformat()
+    sign = "-" if nanoseconds < 0 else ""
+    seconds, fraction = divmod(abs(nanoseconds), 1_000_000_000)
+    precision = f".{fraction:09d}".rstrip("0") if fraction else ""
+    return f"{sign}PT{seconds}{precision}S"
 
 
 def _normalize(
@@ -100,6 +115,8 @@ def _normalize(
         # .item() returns integer ticks at nanosecond resolution, losing the
         # timestamp's meaning. Format in NumPy to retain fractional precision.
         return None if np.isnat(value) else str(np.datetime_as_string(value, unit="auto"))
+    if isinstance(value, np.timedelta64):
+        return _timedelta_iso8601(value)
     if hasattr(value, "item"):
         try:
             unwrapped = value.item()
