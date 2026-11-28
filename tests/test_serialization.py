@@ -1,4 +1,6 @@
 import json
+import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from numbers import Real
 
@@ -352,6 +354,29 @@ def test_default_exports_succeed_for_circular_samples_and_omit_values():
     assert json.loads(context.to_json()) == exported
 
 
+@pytest.mark.parametrize(
+    ("sample", "expected"),
+    [
+        ([pd.NA, pd.NaT, "<NA>", "NaT"], [None, None, "<NA>", "NaT"]),
+        (
+            {"missing": pd.NA, "missing_time": pd.NaT, "labels": ["<NA>", "NaT"]},
+            {"missing": None, "missing_time": None, "labels": ["<NA>", "NaT"]},
+        ),
+    ],
+    ids=["list", "mapping"],
+)
+def test_structured_samples_export_pandas_missing_scalars_as_null(sample, expected):
+    context = inspect(pd.DataFrame({"payload": [sample]}))
+
+    exported = context.to_dict(include_values=True)
+    assert exported["columns"][0]["statistics"]["top_values"] == [[expected, 1]]
+    assert json.loads(context.to_json(include_values=True)) == exported
+
+    default_export = context.to_dict()
+    assert default_export["columns"][0]["statistics"]["top_values"] == []
+    assert json.loads(context.to_json()) == default_export
+
+
 def test_context_limit_keeps_an_explicit_marker_for_long_labels():
     import pandas as pd
 
@@ -393,6 +418,20 @@ def test_markdown_warning_change_leaves_structured_output_alone():
     assert json.loads(context.to_json()) == exported
 
 
+def _without_metric_sql(markdown: str) -> str:
+    """Drop the SQL code spans and fenced blocks from the metric lines of a Markdown report."""
+    kept = []
+    in_fence = False
+    for line in markdown.splitlines():
+        if line.startswith("  ```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        kept.append(line.split("confidence): ", 1)[0] if line.startswith("- **") else line)
+    return "\n".join(kept)
+
+
 def test_markdown_renders_column_names_as_literal_text():
     import pandas as pd
 
@@ -405,7 +444,10 @@ def test_markdown_renders_column_names_as_literal_text():
             "order_id": list("aabbccdd"),
         }
     )
-    markdown = inspect(frame).to_markdown()
+    full_markdown = inspect(frame).to_markdown()
+    # Metric SQL is code and is shown verbatim (#236); the rules below are for display text.
+    markdown = _without_metric_sql(full_markdown)
+    assert 'SUM("a*b")' in full_markdown
 
     # Markdown characters are escaped and a newline never splits a line.
     assert r"### a\*b" in markdown
@@ -1053,3 +1095,94 @@ def test_truncated_context_skips_oversized_warning_and_keeps_fitting_warnings():
     assert wider.index("short high warning.") < wider.index("short medium warning.")
     assert "C" * 50 not in wider
     assert "COLUMNS" in wider
+
+
+def _markdown_metric_sql(markdown: str, metric_name: str) -> str:
+    """Read back the SQL that the Markdown report shows for one metric (#236)."""
+    lines = markdown.splitlines()
+    index = next(i for i, line in enumerate(lines) if f"({metric_name} · " in line)
+    head = lines[index].split("confidence): ", 1)[1] if "confidence): " in lines[index] else ""
+    if head.startswith("`"):
+        fence = head[: len(head) - len(head.lstrip("`"))]
+        assert head.endswith(fence)
+        code = head[len(fence) : -len(fence)]
+        if code.startswith(" ") and code.endswith(" ") and code.strip():
+            code = code[1:-1]
+        return code
+    assert lines[index].endswith("confidence):"), lines[index]
+    opening = lines[index + 1]
+    assert opening.startswith("  ```") and opening.endswith("sql")
+    fence = opening.strip()[: -len("sql")]
+    body = []
+    for line in lines[index + 2 :]:
+        if line == f"  {fence}":
+            return "\n".join(body)
+        assert line.startswith("  ")
+        body.append(line[2:])
+    raise AssertionError("unterminated SQL fence")
+
+
+def _run_metric_sql(frame: pd.DataFrame, sql: str) -> float:
+    with closing(sqlite3.connect(":memory:")) as db:
+        frame.to_sql("dataset", db, index=False)
+        return float(db.execute(f"SELECT {sql} FROM dataset").fetchone()[0])
+
+
+def test_markdown_keeps_a_newline_inside_a_quoted_sql_identifier():
+    name = "net\namount"
+    frame = pd.DataFrame({name: [1.5, 2.5, 3.5], "net amount": [10.5, 20.5, 30.5]})
+    context = inspect(frame)
+    markdown = context.to_markdown()
+    newline_metric = next(m for m in context.metrics if m.columns == (name,))
+    spaced_metric = next(m for m in context.metrics if m.columns == ("net amount",))
+
+    shown = _markdown_metric_sql(markdown, newline_metric.name)
+    assert shown == newline_metric.sql == 'SUM("net\namount")'
+    assert _run_metric_sql(frame, shown) == pytest.approx(7.5)
+    metric_line = next(line for line in markdown.splitlines() if f"({newline_metric.name} · " in line)
+    assert 'SUM("net amount")' not in metric_line
+
+    shown_spaced = _markdown_metric_sql(markdown, spaced_metric.name)
+    assert shown_spaced == 'SUM("net amount")'
+    assert _run_metric_sql(frame, shown_spaced) == pytest.approx(61.5)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_sql"),
+    [
+        ("amount", "SUM(amount)"),
+        ('say "hi"', 'SUM("say ""hi""")'),
+        ("a`b", 'SUM("a`b")'),
+        ("`tick", 'SUM("`tick")'),
+        ("blank\n\nline", 'SUM("blank\n\nline")'),
+        ("  lead\n``` x", 'SUM("  lead\n``` x")'),
+    ],
+    ids=["ordinary", "embedded-quote", "backtick", "leading-backtick", "blank-line", "fence-like-line"],
+)
+def test_markdown_shows_metric_sql_verbatim(name, expected_sql):
+    frame = pd.DataFrame({name: [1.5, 2.5, 3.5], "other": [1, 2, 3]})
+    context = inspect(frame)
+    metric = next(m for m in context.metrics if m.columns == (name,))
+    assert metric.sql == expected_sql
+
+    shown = _markdown_metric_sql(context.to_markdown(), metric.name)
+    assert shown == expected_sql
+    assert _run_metric_sql(frame, shown) == pytest.approx(7.5)
+
+
+def test_markdown_ordinary_metric_formula_stays_on_one_line():
+    frame = pd.DataFrame({"order_id": [1, 2, 3], "amount": [1.5, 2.5, 3.5]})
+    markdown = inspect(frame).to_markdown()
+    assert "confidence): `SUM(amount)`" in markdown
+    assert "confidence): `COUNT(DISTINCT order_id)`" in markdown
+
+
+def test_markdown_points_to_canonical_sql_when_it_cannot_show_it_verbatim():
+    # Markdown turns a carriage return into an ordinary line break, which would change the identifier.
+    name = "net\ramount"
+    frame = pd.DataFrame({name: [1.5, 2.5, 3.5], "net amount": [10.5, 20.5, 30.5]})
+    context = inspect(frame)
+    metric = next(m for m in context.metrics if m.columns == (name,))
+    metric_line = next(line for line in context.to_markdown().splitlines() if f"({metric.name} · " in line)
+    assert "SQL not shown" in metric_line and "DatasetContext.metrics" in metric_line
+    assert "SUM(" not in metric_line

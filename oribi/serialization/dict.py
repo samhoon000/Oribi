@@ -109,6 +109,8 @@ def _normalize(
             ]
         finally:
             _active.discard(id(value))
+    if value is pd.NA or value is pd.NaT:
+        return None
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, np.datetime64):
@@ -149,8 +151,8 @@ def _normalize(
 def to_dict(context: Any, *, include_values: bool = False) -> dict[str, Any]:
     """Return an export-safe projection by default; opt in to local sample values.
 
-    Non-finite floats and extended floating-point scalars outside IEEE 754
-    float64 / JSON number range are normalized to ``None``.
+    Pandas missing scalars, non-finite floats, and extended floating-point
+    scalars outside IEEE 754 float64 / JSON number range normalize to ``None``.
     """
     result = _normalize(context, include_values)
     if not include_values:
