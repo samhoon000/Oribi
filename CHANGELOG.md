@@ -17,6 +17,7 @@ All notable changes to Oribi are recorded here.
 - Redact small-sample standard deviation from semantic and recommendation evidence in default dictionary and JSON exports, preserving local and opt-in values. (#233)
 - Base directional mapping repetition and generalization support on complete pairs, so rows with missing targets cannot inflate relationship confidence. (#239)
 - Keep skipped metric-grain check caveats beside their SQL in compact reports; omit the complete metric line when the qualified expression cannot fit the character budget. (#242)
+- Qualify SUM and MEAN guidance for names ending in balance or balances, and omit unconditional totals for these likely snapshots while retaining additive transaction totals. (#238)
 
 ## 0.3.0 — 2026-11-24
 

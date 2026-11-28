@@ -12,7 +12,7 @@ _NON_ADDITIVE_TOKEN_PAIRS = {("unit", "price"), ("unit", "cost")}
 
 
 def reason_column(name: str, logical_type: str, semantic: SemanticContext, stats: StatisticsContext, row_count: int) -> tuple[tuple[Recommendation, ...], tuple[Warning, ...]]:
-    """Build guidance, treating adjacent unit price and unit cost name tokens as non-additive hints."""
+    """Build guidance with name-based qualifications for derived measures and balance snapshots."""
     recommendations: list[Recommendation] = []
     warnings: list[Warning] = []
     high_cardinality_text = logical_type == "text" and semantic.role not in {"identifier", "temporal"} and stats.distinct_count > 100
@@ -42,6 +42,10 @@ def reason_column(name: str, logical_type: str, semantic: SemanticContext, stats
             evidence = (*semantic.evidence, Evidence("name_non_additive_hint", "The name suggests a rate, ratio, or other derived measure"))
             recommendations.append(Recommendation("SUM", "not_applicable", "Summing rates, ratios, or pre-aggregated measures across observations generally does not produce a meaningful total.", evidence))
             recommendations.append(Recommendation("MEAN", "caution", "Check weighting and denominators before combining derived values. Recompute a combined rate or ratio from its underlying totals when available.", evidence))
+        elif words and words[-1] in {"balance", "balances"}:
+            evidence = (*semantic.evidence, Evidence("name_balance_snapshot_hint", "The name suggests a balance snapshot rather than an additive flow"))
+            recommendations.append(Recommendation("SUM", "caution", "Balance snapshots should not be summed across time. Summing across entities can be valid at a common as-of time after checking the entity grain.", evidence))
+            recommendations.append(Recommendation("MEAN", "caution", "For an average balance over time, check snapshot intervals and use time weighting when intervals are unequal.", evidence))
         else:
             recommendations.append(Recommendation("SUM", "recommended", "SUM is a reasonable starting point for additive quantities to measure total volume across observations.", semantic.evidence))
             recommendations.append(Recommendation("MEAN", "recommended", "MEAN is a reasonable starting point for estimating typical values across observations when the distribution is relatively symmetric.", semantic.evidence))
