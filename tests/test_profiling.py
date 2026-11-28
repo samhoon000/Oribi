@@ -940,6 +940,31 @@ def test_categorical_high_cardinality_warning_is_unchanged():
     assert "high_cardinality_text" not in codes
 
 
+@pytest.mark.parametrize(
+    ("name", "values", "fill", "logical", "role"),
+    [
+        ("region", ["east", "east", "west", None], float("nan"), "text", "dimension"),
+        ("region", ["east", "east", "west", None], "east", "text", "dimension"),
+        ("active", [True, True, False, None], float("nan"), "boolean", "boolean"),
+    ],
+    ids=["text", "text-with-nonmissing-fill", "boolean"],
+)
+def test_sparse_object_matches_dense_semantics(name, values, fill, logical, role):
+    dense = pd.Series(values, dtype=object)
+    sparse = pd.arrays.SparseArray(dense, dtype=pd.SparseDtype(object, fill))
+    dense_column = inspect(pd.DataFrame({name: dense})).columns[0]
+    sparse_column = inspect(pd.DataFrame({name: sparse})).columns[0]
+
+    assert sparse_column.dtype == str(sparse.dtype)
+    assert sparse_column.statistics.missing_count == dense_column.statistics.missing_count == 1
+    assert sparse_column.logical_type == dense_column.logical_type == logical
+    assert sparse_column.semantic.role == dense_column.semantic.role == role
+    operations = {r.operation for r in sparse_column.recommendations}
+    assert operations == {r.operation for r in dense_column.recommendations}
+    if role == "dimension":
+        assert "GROUP BY" in operations
+
+
 def test_sparse_timedelta_profiles_like_dense_with_missing_values():
     elapsed = pd.to_timedelta([1, None, 2, 1], unit="D")
     sparse = pd.arrays.SparseArray(elapsed)
