@@ -162,6 +162,12 @@ def to_dict(context: Any, *, include_values: bool = False) -> dict[str, Any]:
                 for field in ("mean", "median", "standard_deviation", "skewness"):
                     statistics[field] = None
                 statistics["quantiles"] = {}
+                # Semantic evidence is also copied into column guidance.
+                # Redact each exported copy without changing the local model.
+                for owner in [column["semantic"], *column["recommendations"], *column["warnings"]]:
+                    for evidence in owner["evidence"]:
+                        if evidence["code"] == "numeric_value_variability":
+                            evidence["details"].pop("standard_deviation", None)
     return result
 
 
