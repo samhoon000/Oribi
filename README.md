@@ -84,7 +84,7 @@ Oribi profiles the DataFrame in memory and does not keep a reference to it in th
 
 Top values are ranked by frequency using pandas equality and counts. Ties use a stable value order for supported types, including strings, built-in numbers, and common date and time values. Tied opaque objects without a stable value key follow pandas count order, so reordering rows or categories can change which of them appears at the cutoff. Profiling does not call their `repr()` to rank them.
 
-`to_dict`, `to_json`, `to_markdown`, and `to_context` accept `include_values`. `summary()` does not. With the default `include_values=False`, those four exports omit sampled cell values and exact bounds. Dictionary and JSON exports still keep `top_frequencies` (the counts, without the sampled values) and omit strings in evidence details. They also omit means, medians, standard deviations, skewness, and quantiles when fewer than three non-missing values were observed.
+`to_dict`, `to_json`, `to_markdown`, and `to_context` accept `include_values`. `summary()` does not. With the default `include_values=False`, those four exports omit sampled cell values and exact bounds. Dictionary and JSON exports still keep `top_frequencies` (the counts, without the sampled values) and omit strings in evidence details. They also omit means, medians, standard deviations, skewness, and quantiles when fewer than three non-missing values were observed. This includes standard deviations repeated in semantic and recommendation evidence; the statement that values vary remains available.
 
 You can explicitly include local values and bounds when exporting:
 
