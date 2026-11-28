@@ -29,6 +29,7 @@ class ColumnObservation:
     distinct_count_exact: bool = True
     fallback_counts: tuple[pd.Series, bool] | None = None
     is_decimal: bool = False
+    is_float: bool = False
 
 
 def _has_decimal_and_integer_values(values: pd.Series) -> bool:
@@ -77,6 +78,7 @@ class AnalysisSession:
             distinct = len(counts)
         date_evidence = None
         is_decimal = False
+        is_float = False
         if pd.api.types.is_bool_dtype(series.dtype):
             logical = "boolean"
         elif pd.api.types.is_datetime64_any_dtype(series.dtype):
@@ -104,6 +106,7 @@ class AnalysisSession:
             is_decimal = kind == "decimal" or (
                 kind == "mixed-integer" and _has_decimal_and_integer_values(values)
             )
+            is_float = kind in {"floating", "mixed-integer-float"}
             if kind == "empty":
                 logical = "unknown"
             elif kind == "boolean":
@@ -132,6 +135,7 @@ class AnalysisSession:
             distinct_count_exact=distinct_count_exact,
             fallback_counts=fallback_counts,
             is_decimal=is_decimal,
+            is_float=is_float,
         )
         self.observations[name] = obs
         return obs
