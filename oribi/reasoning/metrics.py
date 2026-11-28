@@ -260,6 +260,16 @@ def _sql_sum_numerator(col: ColumnContext) -> str:
     return f"1.0 * SUM({sql_name})"
 
 
+def _sql_per_entity_sum(col: ColumnContext, expression: str) -> str:
+    if _is_float_column(col):
+        return f"SUM({expression})"
+    if any(e.code == "decimal_values" for e in col.semantic.evidence):
+        return f"1.0 * SUM({expression})"
+    # Promote each input before SUM: multiplying an already-overflowed
+    # integer total cannot preserve a representable per-entity average.
+    return f"SUM(1.0 * ({expression}))"
+
+
 def _is_additive_measure(col: ColumnContext) -> bool:
     return col.semantic.role == "measure" and any(
         rec.operation == "SUM" and rec.disposition == "recommended" for rec in col.recommendations
@@ -784,11 +794,7 @@ def _infer_measure_per_entity(
                 det_sql = _sql_col(det_col.name)
                 m_sql = _sql_col(m_col.name)
                 id_sql = _sql_col(id_col.name)
-                sum_expr = (
-                    "SUM(measure_value)"
-                    if _is_float_column(m_col)
-                    else "1.0 * SUM(measure_value)"
-                )
+                sum_expr = _sql_per_entity_sum(m_col, "measure_value")
                 if det_col.name == id_col.name:
                     sql = (
                         f"WITH {alias} AS (SELECT {det_sql}, MAX({m_sql}) AS measure_value "
@@ -849,11 +855,7 @@ def _infer_measure_per_entity(
                 m_sql = _sql_col(m_col.name)
                 per_entity_caveats: list[str] = []
                 if id_col.statistics.missing_count > 0:
-                    sum_expr = (
-                        f"SUM(CASE WHEN {id_sql} IS NOT NULL THEN {m_sql} END)"
-                        if _is_float_column(m_col)
-                        else f"1.0 * SUM(CASE WHEN {id_sql} IS NOT NULL THEN {m_sql} END)"
-                    )
+                    sum_expr = _sql_per_entity_sum(m_col, f"CASE WHEN {id_sql} IS NOT NULL THEN {m_sql} END")
                     sql = f"{sum_expr} / NULLIF(COUNT(DISTINCT {id_sql}), 0)"
                     rationale = (
                         f"Computes total {m_col.name} per distinct {id_col.name}, "
@@ -866,7 +868,8 @@ def _infer_measure_per_entity(
                         f"(even when the missing rate is below any general warning threshold)."
                     )
                 else:
-                    sql = f"{_sql_sum_numerator(m_col)} / NULLIF(COUNT(DISTINCT {id_sql}), 0)"
+                    sum_expr = _sql_per_entity_sum(m_col, m_sql)
+                    sql = f"{sum_expr} / NULLIF(COUNT(DISTINCT {id_sql}), 0)"
                     rationale = (
                         f"Computes total {m_col.name} per distinct {id_col.name} "
                         "using NULLIF to avoid division by zero."

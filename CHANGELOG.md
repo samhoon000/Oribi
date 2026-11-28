@@ -6,6 +6,8 @@ All notable changes to Oribi are recorded here.
 
 ### Fixed
 
+- Promote integer inputs before summing in inferred per-entity averages so a representable average does not fail on SQLite integer overflow. (#241)
+
 - Show metric SQL in Markdown reports as code, verbatim, so quoted identifiers containing newlines, quotes, or Markdown characters are not rewritten; SQL that Markdown cannot preserve points to the canonical metric SQL instead. (#236)
 - Preserve one-dimensional numeric NumPy arrays as lists in opt-in structured samples, including empty and single-element vectors. (#235)
 - Keep the missing-parent caveat and filtered numerator out of entity-ratio metrics when only child IDs are missing. (#227)
