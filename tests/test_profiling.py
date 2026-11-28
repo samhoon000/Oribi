@@ -9,6 +9,28 @@ import pytest
 from oribi import ProfileOptions, inspect
 
 
+@pytest.mark.parametrize(
+    ("readings", "expected"),
+    [
+        ([-1e308, 1e308], {"0.25": -5e307, "0.5": 0.0, "0.75": 5e307}),
+        ([-1e308, 5e-324, 5e-324, 1e308], {"0.25": -2.5e307, "0.5": 5e-324, "0.75": 2.5e307}),
+        ([-4.0, 2.0], {"0.25": -2.5, "0.5": -1.0, "0.75": 0.5}),
+    ],
+    ids=["wide-signed", "wide-with-subnormal-middle", "ordinary-signed"],
+)
+def test_float_quartiles_match_finite_linear_interpolation(readings, expected):
+    frame = pd.DataFrame({"reading": readings})
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        stats = inspect(frame).get_column("reading").statistics
+
+    assert stats.quantiles == pytest.approx(expected)
+    assert stats.quantiles["0.5"] == stats.median
+    assert not any("overflow encountered in subtract" in str(w.message) for w in recorded)
+    disabled = inspect(frame, options=ProfileOptions(include_quantiles=False)).get_column("reading")
+    assert disabled.statistics.quantiles == {}
+
+
 @pytest.mark.parametrize("dtype", ["int8", "Int8", "int64", "Int64"])
 def test_signed_integer_quantiles_do_not_overflow(dtype):
     bits = int(dtype[3:])
