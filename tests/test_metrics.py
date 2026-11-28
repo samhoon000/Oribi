@@ -843,6 +843,57 @@ def test_metric_caveats_stay_in_structured_output():
     assert any("coincidental" in caveat for caveat in total["caveats"])
 
 
+@pytest.mark.parametrize("options", [
+    ProfileOptions(max_exact_rows=2),
+    ProfileOptions(max_relationship_columns=0),
+    ProfileOptions(max_relationship_columns=1),
+])
+def test_compact_context_keeps_skipped_grain_checks_with_sql(options):
+    context = inspect(pd.DataFrame({
+        "order_id": [1, 1, 2, 2],
+        "profit": [2.1, 2.1, 3.1, 3.1],
+        "revenue": [10.1, 10.1, 20.2, 20.2],
+    }), options=options)
+    total = _metric(context, "total_revenue")
+    assert total.sql == "SUM(revenue)"
+    assert "not checked" not in total.caveats[0]  # Duplicate-row warning precedes it.
+    unchecked = next(c for c in total.caveats if "not checked" in c)
+    before = context.to_dict()
+    displayed_in_truncated = False
+    omitted_in_truncated = False
+
+    for budget in [*range(100, 2001, 25), 8000]:
+        report = context.to_context(max_chars=budget)
+        assert len(report) <= budget
+        lines = [line for line in report.splitlines() if line.startswith("- total_revenue ")]
+        if lines:
+            assert total.sql in lines[0]
+            assert unchecked in lines[0], budget
+            displayed_in_truncated |= "[Context truncated.]" in report
+        else:
+            omitted_in_truncated |= "[Context truncated.]" in report
+        if budget == 8000:
+            assert lines
+            assert "[Context truncated.]" not in report
+
+    assert displayed_in_truncated and omitted_in_truncated
+    assert context.to_dict() == before
+
+
+def test_compact_context_completed_scan_keeps_plain_sum_without_skip_caveat():
+    context = inspect(pd.DataFrame({
+        "order_id": [1, 1, 2, 2],
+        "revenue": [10.1, 11.2, 20.3, 21.4],
+    }))
+    total = _metric(context, "total_revenue")
+    assert total.sql == "SUM(revenue)"
+    assert total.caveats == ()
+    report = context.to_context()
+    line = next(line for line in report.splitlines() if line.startswith("- total_revenue "))
+    assert total.sql in line
+    assert "Caveat:" not in line
+
+
 def test_compact_context_preserves_newline_in_quoted_metric_identifier_under_budget():
     df = pd.DataFrame(
         {
