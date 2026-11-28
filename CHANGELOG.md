@@ -12,6 +12,8 @@ All notable changes to Oribi are recorded here.
 - Serialize NumPy datetime samples as ISO timestamps, preserving nanosecond precision in opt-in dictionary and JSON exports.
 - Serialize NumPy timedelta samples as ISO 8601 durations, preserving nanosecond precision in opt-in dictionary and JSON exports.
 
+- Keep quartiles finite when interpolation spans the extreme ends of a signed float64 range. (#232)
+
 ## 0.3.0 — 2026-11-24
 
 ### Added and improved
