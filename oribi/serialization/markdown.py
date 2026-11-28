@@ -23,6 +23,39 @@ def _md(value: Any) -> str:
     return "\\" + text if text.startswith("#") else text
 
 
+_BACKTICK_RUN = re.compile(r"`+")
+
+
+def _longest_backtick_run(text: str) -> int:
+    return max((len(run) for run in _BACKTICK_RUN.findall(text)), default=0)
+
+
+def _md_sql(sql: str) -> list[str]:
+    """Render metric SQL so the Markdown source and the rendered page keep it verbatim.
+
+    SQL is code, so it is shown as code rather than escaped like display text:
+    escaping or collapsing whitespace would rewrite quoted identifiers such as
+    ``"net\namount"``. A single-line query becomes an inline code span. A
+    query with a line break (only possible inside a quoted identifier) becomes
+    a fenced ``sql`` block on the following lines, indented under the list
+    item. Markdown turns a carriage return into a plain line break, so SQL
+    containing one cannot be shown verbatim; the reader is pointed to the
+    canonical SQL instead. Returns the text that follows ``": "`` on the
+    metric's line, then any lines to add after it.
+    """
+    if "\r" in sql:
+        return [
+            "SQL not shown: it contains a carriage return, which Markdown cannot "
+            "display verbatim. Use the metric's sql field (DatasetContext.metrics)."
+        ]
+    fence = "`" * (_longest_backtick_run(sql) + 1)
+    if "\n" not in sql:
+        pad = " " if sql[:1] in ("`", " ") or sql[-1:] in ("`", " ") else ""
+        return [f"{fence}{pad}{sql}{pad}{fence}"]
+    fence = "`" * max(3, len(fence))
+    return ["", f"  {fence}sql", *(f"  {line}" for line in sql.split("\n")), f"  {fence}"]
+
+
 def _md_column_name(name: str) -> str:
     """Render empty column names with a visible Markdown-only label."""
     return "(empty)" if name == "" else _md(name)
@@ -239,11 +272,13 @@ def to_markdown(context: Any, *, include_values: bool = False) -> str:
     if metrics:
         lines += ["", "## Analytical metrics", ""]
         for metric in metrics:
+            sql_text, *sql_lines = _md_sql(metric.sql)
             lines.append(
                 f"- **{_md(metric.label)}** ({_md(metric.name)} · "
                 f"{_md(metric.kind)} · {metric.confidence:.0%} confidence): "
-                f"{_md(metric.sql)}"
+                f"{sql_text}".rstrip()
             )
+            lines.extend(sql_lines)
             if metric.rationale:
                 lines.append(f"  - Rationale: {_md(metric.rationale)}")
             if metric.evidence:
