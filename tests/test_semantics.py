@@ -620,3 +620,46 @@ def test_id_like_temporal_and_integer_controls_keep_expected_roles():
     assert duration_id.logical_type == "duration"
     assert duration_id.semantic.role == "unknown"
     assert duration_id.recommendations == ()
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        pytest.param([1.25, 2.5, 3.75], id="complete"),
+        pytest.param([1.25, None, 3.75], id="with-missing"),
+    ],
+)
+def test_object_floats_match_float64_measure_semantics(values):
+    import pandas as pd
+
+    object_ctx = inspect(pd.DataFrame({"reading": pd.Series(values, dtype="object")}))
+    float_ctx = inspect(pd.DataFrame({"reading": pd.Series(values, dtype="float64")}))
+    object_col = object_ctx.get_column("reading")
+    float_col = float_ctx.get_column("reading")
+
+    assert object_col.dtype == "object"
+    assert float_col.dtype == "float64"
+    assert object_col.logical_type == float_col.logical_type == "numeric"
+    assert object_col.semantic.role == float_col.semantic.role == "measure"
+    assert object_ctx.grain.columns == float_ctx.grain.columns == ()
+    assert [m.name for m in object_ctx.metrics] == [m.name for m in float_ctx.metrics] == ["total_reading"]
+
+
+def test_object_integers_keep_dimension_role():
+    import pandas as pd
+
+    column = inspect(pd.DataFrame({"reading": pd.Series([1, 2, 3], dtype="object")})).get_column("reading")
+
+    assert column.dtype == "object"
+    assert column.logical_type == "numeric"
+    assert column.semantic.role == "dimension"
+
+
+def test_numeric_strings_keep_text_role():
+    import pandas as pd
+
+    column = inspect(pd.DataFrame({"reading": pd.Series(["1.25", "2.5", "3.75"], dtype="object")})).get_column("reading")
+
+    assert column.dtype == "object"
+    assert column.logical_type == "text"
+    assert column.semantic.role == "unknown"

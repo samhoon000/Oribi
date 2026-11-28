@@ -145,7 +145,10 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
             has_fractional_values=has_fractional_values,
             is_bool_dtype=pd.api.types.is_bool_dtype(observations[name].series.dtype),
             is_decimal=observations[name].is_decimal,
-            is_float=pd.api.types.is_float_dtype(observations[name].series.dtype),
+            is_float=(
+                pd.api.types.is_float_dtype(observations[name].series.dtype)
+                or observations[name].is_float
+            ),
             date_evidence=observations[name].date_evidence,
         )
         for name, (statistics, has_fractional_values) in profiles.items()
