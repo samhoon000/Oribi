@@ -7,6 +7,7 @@ from decimal import Decimal
 from fractions import Fraction
 from heapq import nsmallest
 from itertools import groupby
+from sys import float_info
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -177,6 +178,31 @@ def _float_quartiles_without_overflow(sample: pd.Series) -> dict[str, float]:
     return quartiles
 
 
+def _float_sample_deviation(sample: pd.Series) -> float:
+    """Preserve sample standard deviation when its intermediate variance is out of range."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning, message="overflow encountered")
+        result = float(sample.std())
+
+    # Subnormal variances lose precision before the square root; a zero
+    # result may also be an underflow instead of a truly constant sample.
+    if math.isfinite(result) and result >= math.sqrt(float_info.min):
+        return result
+    peak = max(abs(float(sample.min())), abs(float(sample.max())))
+    if peak == 0:
+        return 0.0
+
+    # Scale by an exact power of two (including for subnormal inputs), then
+    # translate before reduction to preserve close values at a large offset.
+    _, exponent = math.frexp(peak)
+    scaled = sample.map(lambda value: math.ldexp(float(value), -exponent))
+    scaled_deviation = float((scaled - scaled.iloc[0]).std())
+    try:
+        return math.ldexp(scaled_deviation, exponent)
+    except OverflowError:
+        return math.inf
+
+
 def profile_column(
     obs: ColumnObservation, row_count: int, top_k: int, include_quantiles: bool,
 ) -> tuple[StatisticsContext, bool]:
@@ -239,12 +265,18 @@ def profile_column(
             else:
                 mean = finite_or_none(sample.mean()) if len(sample) else None
                 median = finite_or_none(sample.median()) if len(sample) else None
+            deviation = None
+            if len(sample) > 1:
+                if pd.api.types.is_float_dtype(sample.dtype):
+                    deviation = finite_or_none(_float_sample_deviation(sample))
+                else:
+                    deviation = finite_or_none(dispersion_sample.std())
             values.update(
                 minimum=minimum,
                 maximum=maximum,
                 mean=mean,
                 median=median,
-                standard_deviation=finite_or_none(dispersion_sample.std()) if len(sample) > 1 else None,
+                standard_deviation=deviation,
             )
             values["zero_count"] = int((numeric == 0).sum())
             values["negative_count"] = int((numeric < 0).sum())
@@ -276,7 +308,13 @@ def profile_column(
                         if len(sample) else {}
                     )
             if len(sample) >= 3 and sample.nunique() > 1:
-                values["skewness"] = finite_or_none(dispersion_sample.skew())
+                # Cubed deviations may still be unrepresentable. Keep the
+                # existing skewness result without warning about its intermediates.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", category=RuntimeWarning, message="(overflow|invalid value) encountered"
+                    )
+                    values["skewness"] = finite_or_none(dispersion_sample.skew())
     elif obs.logical_type == "temporal" and len(non_null):
         values["minimum"] = non_null.min()
         values["maximum"] = non_null.max()

@@ -1030,3 +1030,22 @@ def test_unhashable_object_frequency_scan_is_shared(monkeypatch, top_k):
     assert column.statistics.distinct_count == column.cardinality.unique_count == 4
     assert len(column.statistics.top_values) == top_k
     assert scans == 1
+
+
+@pytest.mark.parametrize("scale", [1e200, 1e-200, 1e-160, 2.0])
+def test_float_sample_standard_deviation_preserves_wide_exponent_range(scale):
+    frame = pd.DataFrame({"reading": [0.0, scale, 2 * scale]})
+    options = ProfileOptions(include_quantiles=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        column = inspect(frame, options=options).get_column("reading")
+
+    assert column.statistics.standard_deviation == pytest.approx(scale, rel=1e-12, abs=0)
+    assert "constant_numeric_values" not in {e.code for e in column.semantic.evidence}
+
+
+@pytest.mark.parametrize(("values", "expected"), [([1e200, 1e200], 0.0), ([1e-200], None)])
+def test_extreme_float_deviation_retains_constant_and_single_observation_behavior(values, expected):
+    options = ProfileOptions(include_quantiles=False)
+    col = inspect(pd.DataFrame({"reading": values}), options=options).get_column("reading")
+    assert col.statistics.standard_deviation == expected
