@@ -311,6 +311,38 @@ def test_nonmatching_unit_columns_stay_additive(name, values):
     assert any(metric.kind == "measure_total" and metric.columns == (name,) for metric in context.metrics)
 
 
+@pytest.mark.parametrize("name", ["account_balance", "accountBalance", "closing_balance", "balances"])
+def test_balance_snapshots_get_time_qualified_guidance(name):
+    context = inspect(pd.DataFrame({
+        "as_of": pd.date_range("2026-01-01", periods=3),
+        name: [100.25, 120.25, 150.25],
+        "deposit_amount": [10.25, 20.25, 30.25],
+    }))
+    column = context.get_column(name)
+    assert column.semantic.role == "measure"
+    ops = {rec.operation: rec for rec in column.recommendations}
+    assert ops["SUM"].disposition == "caution"
+    assert "across time" in ops["SUM"].rationale
+    assert "common as-of time" in ops["SUM"].rationale
+    assert ops["MEAN"].disposition == "caution"
+    assert any(e.code == "name_balance_snapshot_hint" for e in ops["SUM"].evidence)
+    assert not any(metric.kind == "measure_total" and name in metric.columns for metric in context.metrics)
+
+    deposit = context.get_column("deposit_amount")
+    assert next(r for r in deposit.recommendations if r.operation == "SUM").disposition == "recommended"
+    assert any(m.kind == "measure_total" and m.columns == ("deposit_amount",) for m in context.metrics)
+    for rendered in (context.to_markdown(), context.to_context()):
+        assert "common as-of time" in rendered
+
+
+@pytest.mark.parametrize("name", ["balance_change", "rebalancing_amount"])
+def test_balance_changes_and_nonmatching_names_stay_additive(name):
+    context = inspect(pd.DataFrame({name: [10.25, 20.25, 30.25]}))
+    column = context.get_column(name)
+    assert next(r for r in column.recommendations if r.operation == "SUM").disposition == "recommended"
+    assert any(m.kind == "measure_total" and m.columns == (name,) for m in context.metrics)
+
+
 def test_pipeline_renders_composite_grain_and_measure_conditions():
     rows = 36
     frame = pd.DataFrame({

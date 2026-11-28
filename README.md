@@ -57,6 +57,8 @@ A dimension role is a current inference for reusable low-cardinality values, inc
 
 A role, key, relationship, or grain estimate is an **inference**, not a guarantee about business meaning. Oribi includes evidence so an analyst or downstream system can judge how much to trust each result.
 
+Measure names ending in `balance` or `balances`, including `accountBalance`, receive snapshot-specific aggregation cautions rather than an unconditional total. Balances can be summed across entities at a common as-of time, but successive snapshots should not be summed across time. This is a name-based hint; confirm the meaning and entity grain. Additive transaction amounts such as `deposit_amount` and `balance_change` retain ordinary SUM guidance.
+
 ## Choose an output format
 
 A `DatasetContext` can be rendered for different uses:
