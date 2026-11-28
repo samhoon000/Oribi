@@ -6,11 +6,14 @@ All notable changes to Oribi are recorded here.
 
 ### Fixed
 
+- Show metric SQL in Markdown reports as code, verbatim, so quoted identifiers containing newlines, quotes, or Markdown characters are not rewritten; SQL that Markdown cannot preserve points to the canonical metric SQL instead. (#236)
 - Preserve one-dimensional numeric NumPy arrays as lists in opt-in structured samples, including empty and single-element vectors. (#235)
 - Keep the missing-parent caveat and filtered numerator out of entity-ratio metrics when only child IDs are missing. (#227)
 - Exclude missing labels from distinct counts in one-level MultiIndexes, matching ordinary indexes while preserving pandas duplicate counts. (#224)
 - Serialize NumPy datetime samples as ISO timestamps, preserving nanosecond precision in opt-in dictionary and JSON exports.
 - Serialize NumPy timedelta samples as ISO 8601 durations, preserving nanosecond precision in opt-in dictionary and JSON exports.
+
+- Keep quartiles finite when interpolation spans the extreme ends of a signed float64 range. (#232)
 
 ## 0.3.0 — 2026-11-24
 

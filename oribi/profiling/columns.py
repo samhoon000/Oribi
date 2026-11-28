@@ -154,6 +154,29 @@ def _median_without_overflow(sample: pd.Series) -> float:
     return ordered[middle - 1] / 2.0 + ordered[middle] / 2.0
 
 
+def _float_quartiles_without_overflow(sample: pd.Series) -> dict[str, float]:
+    """Interpolate between finite endpoints without overflowing their difference."""
+    ordered = sorted(float(value) for value in sample)
+    quartiles: dict[str, float] = {}
+    for numerator in (1, 2, 3):
+        index, remainder = divmod((len(ordered) - 1) * numerator, 4)
+        lower = ordered[index]
+        value = lower
+        if remainder:
+            upper = ordered[index + 1]
+            weight = remainder / 4
+            distance = upper - lower
+            if not math.isfinite(distance):
+                # Opposite signs and a difference too large for float64.
+                value = (1 - weight) * lower + weight * upper
+            elif weight < 0.5:
+                value = lower + weight * distance
+            else:
+                value = upper - (1 - weight) * distance
+        quartiles[str(numerator / 4)] = value
+    return quartiles
+
+
 def profile_column(
     obs: ColumnObservation, row_count: int, top_k: int, include_quantiles: bool,
 ) -> tuple[StatisticsContext, bool]:
@@ -240,10 +263,18 @@ def profile_column(
                     # Interpolation subtracts the endpoints in the input dtype.
                     if int(maximum) - int(minimum) >= signed_limit:
                         quantile_sample = sample.astype("float64")
-                values["quantiles"] = (
-                    {str(q): finite_or_none(v) for q, v in quantile_sample.quantile([.25, .5, .75]).items()}
-                    if len(sample) else {}
-                )
+                if (
+                    minimum is not None
+                    and maximum is not None
+                    and pd.api.types.is_float_dtype(sample.dtype)
+                    and not math.isfinite(float(maximum) - float(minimum))
+                ):
+                    values["quantiles"] = _float_quartiles_without_overflow(sample)
+                else:
+                    values["quantiles"] = (
+                        {str(q): finite_or_none(v) for q, v in quantile_sample.quantile([.25, .5, .75]).items()}
+                        if len(sample) else {}
+                    )
             if len(sample) >= 3 and sample.nunique() > 1:
                 values["skewness"] = finite_or_none(dispersion_sample.skew())
     elif obs.logical_type == "temporal" and len(non_null):
