@@ -758,6 +758,28 @@ def _strict_json_loads(payload: str):
     return json.loads(payload, parse_constant=reject_constant)
 
 
+@pytest.mark.parametrize(
+    ("sample", "expected"),
+    [
+        ([np.array([42, 43]), np.array([42])], [[42, 43], [42]]),
+        (np.array([], dtype=float), []),
+        (np.array([np.nan, np.inf, -np.inf, 1.5]), [None, None, None, 1.5]),
+        (np.array([2**64 - 1], dtype=np.uint64), [2**64 - 1]),
+        (np.array([1.25], dtype=np.longdouble), [1.25]),
+        ([np.int64(42), np.float64(1.5), np.array(7)], [42, 1.5, 7]),
+    ],
+    ids=["nested-vectors", "empty", "non-finite", "uint64", "longdouble", "scalars"],
+)
+def test_structured_samples_preserve_numeric_vector_shape(sample, expected):
+    context = inspect(pd.DataFrame({"payload": [sample]}))
+
+    exported = context.to_dict(include_values=True)
+    assert exported["columns"][0]["statistics"]["top_values"] == [[expected, 1]]
+    assert _strict_json_loads(context.to_json(include_values=True)) == exported
+    assert context.to_dict()["columns"][0]["statistics"]["top_values"] == []
+    assert _strict_json_loads(context.to_json()) == context.to_dict()
+
+
 def test_structured_exports_handle_numpy_longdouble_index_name():
     index = pd.Index(["a", "b", "c"], name=np.longdouble("1.25"))
     context = inspect(pd.DataFrame({"amount": [1, 2, 3]}, index=index))

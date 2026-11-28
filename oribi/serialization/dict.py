@@ -117,6 +117,12 @@ def _normalize(
         return None if np.isnat(value) else str(np.datetime_as_string(value, unit="auto"))
     if isinstance(value, np.timedelta64):
         return _timedelta_iso8601(value)
+    if isinstance(value, np.ndarray) and value.ndim == 1 and value.dtype.kind in "biufc":
+        # Preserve vector shape before .item() can unwrap a one-element array.
+        return _normalize(
+            value.tolist(), include_values, evidence_details=evidence_details,
+            _active=_active, _path=_path,
+        )
     if hasattr(value, "item"):
         try:
             unwrapped = value.item()
