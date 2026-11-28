@@ -281,6 +281,7 @@ def detect_relationships(
 
     Directional mapping candidates must vary before they count toward the
     column budget. Sources must also reuse values, but targets may be unique.
+    Mapping repetition and sample support use complete pairs before deduplication.
 
     One-to-many links require an observed candidate key on the entity side,
     with each entity mapping to one repeated group value. Column names do not
@@ -327,12 +328,12 @@ def detect_relationships(
     results: list[RelationshipContext] = []
     for source in mapping_sources:
         source_values = distinct_count(source)
-        source_observed = source_observed_counts[source]
         for target in mapping_targets:
             if source == target:
                 continue
             try:
-                pairs = frame[[source, target]].dropna().drop_duplicates()
+                paired = frame[[source, target]].dropna()
+                pairs = paired.drop_duplicates()
             except (TypeError, ValueError):
                 continue
             mapping_counts = pairs.groupby(pairs[source], dropna=True, observed=True, sort=False)[target].nunique()
@@ -340,15 +341,16 @@ def detect_relationships(
             coverage = unique_mapping / source_values
             affected_groups = int(mapping_counts.gt(1).sum())
             violations = int((mapping_counts - 1).clip(lower=0).sum())
-            paired_rows = int(frame[[source, target]].notna().all(axis=1).sum())
+            paired_rows = len(paired)
             missing_pairs = len(frame) - paired_rows
             if coverage >= .98:
                 target_values = distinct_count(target)
                 exact_mapping = unique_mapping == source_values and not violations and not missing_pairs
-                repeated_fraction = max(0.0, (source_observed - source_values) / source_observed)
+                # Rows without a target do not support repetition or generalization.
+                repeated_fraction = (paired_rows - len(mapping_counts)) / paired_rows
                 confidence, components = _score(
                     {"mapping_coverage": coverage, "repeated_determinant_support": repeated_fraction,
-                     "generalization": _generalization_support(source_observed)},
+                     "generalization": _generalization_support(paired_rows)},
                     {"mapping_coverage": 0.55, "repeated_determinant_support": 0.25,
                      "generalization": 0.20},
                 )

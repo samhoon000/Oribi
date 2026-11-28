@@ -15,6 +15,7 @@ All notable changes to Oribi are recorded here.
 
 - Keep quartiles finite when interpolation spans the extreme ends of a signed float64 range. (#232)
 - Redact small-sample standard deviation from semantic and recommendation evidence in default dictionary and JSON exports, preserving local and opt-in values. (#233)
+- Base directional mapping repetition and generalization support on complete pairs, so rows with missing targets cannot inflate relationship confidence. (#239)
 
 ## 0.3.0 — 2026-11-24
 
