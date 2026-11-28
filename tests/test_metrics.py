@@ -102,7 +102,7 @@ def test_integer_measure_division_avoids_integer_truncation_in_sql():
     )
     context = inspect(frame)
     aov = _metric(context, "average_order_value")
-    assert aov.sql == "1.0 * SUM(revenue) / NULLIF(COUNT(DISTINCT order_id), 0)"
+    assert aov.sql == "SUM(1.0 * (revenue)) / NULLIF(COUNT(DISTINCT order_id), 0)"
 
     margin = _metric(context, "profit_margin")
     assert margin.kind == "measure_ratio"
@@ -471,7 +471,7 @@ def test_integer_measure_with_null_entity_id_preserves_fractional_result():
     context = inspect(frame)
     aov = _metric(context, "average_order_value")
     assert aov.sql == (
-        "1.0 * SUM(CASE WHEN order_id IS NOT NULL THEN revenue END) "
+        "SUM(1.0 * (CASE WHEN order_id IS NOT NULL THEN revenue END)) "
         "/ NULLIF(COUNT(DISTINCT order_id), 0)"
     )
     assert _eval_sql(frame, aov.sql) == 15.0
@@ -1228,3 +1228,21 @@ def test_id_like_durations_do_not_deduplicate_or_withhold_revenue_or_suppress_in
     assert _eval_sql(sql_frame, _metric(control_ctx, "average_order_value").sql) == pytest.approx(
         46.0 / 3.0
     )
+
+
+@pytest.mark.parametrize(
+    ("order_ids", "offsets"),
+    [
+        ([1, 2, 3], [0, 1, 2]),
+        ([1, 1, 2, 2, 3, 3, 4, 4], [0, 0, 1, 1, 2, 2, 3, 3]),
+        ([1, 2, 3, None], [0, 1, 2, 100]),
+    ],
+    ids=["plain", "deduplicated", "missing-entity"],
+)
+def test_integer_per_entity_average_does_not_overflow_sum(order_ids, offsets):
+    base = 2**62
+    revenue = [base + n * 2**50 for n in offsets]
+    frame = pd.DataFrame({"order_id": pd.array(order_ids, dtype="Int64"), "revenue": revenue})
+    assigned = {order: value for order, value in zip(order_ids, revenue, strict=True) if order is not None}
+    metric = _metric(inspect(frame), "average_order_value")
+    assert _eval_sql(frame, metric.sql) == pytest.approx(sum(assigned.values()) / len(assigned), rel=1e-15)
