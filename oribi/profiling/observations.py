@@ -77,7 +77,9 @@ class AnalysisSession:
             distinct = len(counts)
         date_evidence = None
         is_decimal = False
-        if pd.api.types.is_bool_dtype(series.dtype):
+        dtype = series.dtype
+        sparse_object = isinstance(dtype, pd.SparseDtype) and pd.api.types.is_object_dtype(dtype.subtype)
+        if pd.api.types.is_bool_dtype(dtype):
             logical = "boolean"
         elif pd.api.types.is_datetime64_any_dtype(series.dtype):
             logical = "temporal"
@@ -98,8 +100,12 @@ class AnalysisSession:
                 "Column has a pandas Period dtype",
                 {"dtype": str(series.dtype)},
             )
-        elif series.dtype == object or pd.api.types.is_string_dtype(series.dtype):
+        elif sparse_object or pd.api.types.is_object_dtype(dtype) or pd.api.types.is_string_dtype(dtype):
             values = series.dropna()
+            if sparse_object:
+                # Infer from the nonmissing values, including any nonmissing fill.
+                # Keep the input series so the public profile retains its sparse dtype.
+                values = values.sparse.to_dense()
             kind = "empty" if values.empty else pd.api.types.infer_dtype(values, skipna=False)
             is_decimal = kind == "decimal" or (
                 kind == "mixed-integer" and _has_decimal_and_integer_values(values)

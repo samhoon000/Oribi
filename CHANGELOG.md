@@ -6,6 +6,7 @@ All notable changes to Oribi are recorded here.
 
 ### Fixed
 
+- Infer the same logical types and grouping guidance for sparse object columns and their dense equivalents, without changing the reported dtype. (#223)
 - Keep the missing-parent caveat and filtered numerator out of entity-ratio metrics when only child IDs are missing. (#227)
 - Exclude missing labels from distinct counts in one-level MultiIndexes, matching ordinary indexes while preserving pandas duplicate counts. (#224)
 - Serialize NumPy datetime samples as ISO timestamps, preserving nanosecond precision in opt-in dictionary and JSON exports.
