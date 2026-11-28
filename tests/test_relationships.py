@@ -669,6 +669,81 @@ def test_unique_observed_values_can_be_a_directional_mapping_target():
     assert relation.missing_pair_count == 2
 
 
+@pytest.mark.parametrize("paired_repeats", [1, 2])
+def test_target_null_rows_do_not_inflate_mapping_support(paired_repeats):
+    observed = []
+    for extra in (1, 40):
+        context = inspect(pd.DataFrame({
+            "postcode": ["AA", "BB"] * (paired_repeats + extra),
+            "city": ["X", "Y"] * paired_repeats + [None] * (2 * extra),
+        }))
+        relation = next(r for r in context.relationships
+                        if (r.source_column, r.target_column) == ("postcode", "city"))
+        assert relation.kind == "approximate_mapping"
+        assert relation.coverage == 1.0
+        assert relation.paired_row_count == 2 * paired_repeats
+        assert relation.missing_pair_count == 2 * extra
+        assert relation.evidence[0].details["paired_row_count"] == 2 * paired_repeats
+        assert relation.evidence[0].details["missing_pair_count"] == 2 * extra
+        observed.append(relation)
+
+    assert observed[0].confidence == observed[1].confidence
+    assert observed[0].confidence_components == observed[1].confidence_components
+    if paired_repeats == 1:
+        assert observed[0].confidence_components["repeated_determinant_support"] == 0.0
+
+
+def test_repeated_complete_pairs_can_increase_mapping_support():
+    observed = []
+    for repeats in (1, 20):
+        context = inspect(pd.DataFrame({
+            "postcode": ["AA", "BB"] * repeats + ["AA"],
+            "city": ["X", "Y"] * repeats + [None],
+        }))
+        observed.append(next(r for r in context.relationships
+                             if (r.source_column, r.target_column) == ("postcode", "city")))
+    small, large = observed
+    assert small.kind == large.kind == "approximate_mapping"
+    assert small.coverage == large.coverage == 1.0
+    assert large.confidence > small.confidence
+    for component in ("repeated_determinant_support", "generalization"):
+        assert large.confidence_components[component] > small.confidence_components[component]
+
+
+def test_unpaired_new_determinant_changes_coverage_without_adding_support():
+    frame = pd.DataFrame({
+        "postcode": [f"P{i:02d}" for i in range(50) for _ in range(2)] + ["P00"],
+        "city": [f"C{i % 2}" for i in range(50) for _ in range(2)] + [None],
+    })
+    extended = pd.concat([frame, pd.DataFrame({"postcode": ["unpaired"], "city": [None]})], ignore_index=True)
+    observed = []
+    for current in (frame, extended):
+        context = inspect(current)
+        observed.append(next(r for r in context.relationships
+                             if (r.source_column, r.target_column) == ("postcode", "city")))
+    before, after = observed
+    assert before.kind == after.kind == "approximate_mapping"
+    assert before.coverage == 1.0
+    assert after.coverage == pytest.approx(50 / 51)
+    assert before.paired_row_count == after.paired_row_count == 100
+    assert (before.missing_pair_count, after.missing_pair_count) == (1, 2)
+    assert after.evidence[0].details["source_distinct"] == 51
+    assert after.confidence <= before.confidence
+    for component in ("repeated_determinant_support", "generalization"):
+        assert after.confidence_components[component] == before.confidence_components[component]
+
+
+def test_complete_dependency_keeps_existing_support_and_exact_status():
+    (relation,) = inspect(_product_family_frame()).relationships
+    assert relation.kind == "functional_dependency"
+    assert relation.mapping_cardinality == "many_to_one"
+    assert relation.coverage == 1.0
+    assert relation.paired_row_count == 8
+    assert relation.missing_pair_count == 0
+    assert relation.confidence_components["repeated_determinant_support"] == 0.5
+    assert relation.confidence == 0.84
+
+
 def test_directional_mapping_respects_column_and_relationship_budgets():
     frame = pd.DataFrame({"label": ["a", "a", "b", "b"], "code": ["x", "x", "y", "y"]})
 

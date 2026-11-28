@@ -290,14 +290,19 @@ def _metric_lines(context: Any) -> list[_ContextLine]:
         sql = _compact_metric_sql(metric.sql)
         line = f"- {metric.name} ({metric.confidence:.0%} confidence): {sql}"
         caveats = [" ".join(caveat.split()) for caveat in metric.caveats]
-        # SQL that deduplicates rows is only safe to use together with the caveat
-        # explaining that assumption, so both stay in the same required text.
+        # Keep grain assumptions and skipped checks with the SQL even when
+        # optional evidence is dropped, or omit the entire metric if it cannot fit.
         dedup_caveat = None
         if any(item.code == _DEDUP_EVIDENCE_CODE for item in metric.evidence):
             dedup_caveat = next((c for c in caveats if "deduplicates" in c), None)
-        if dedup_caveat:
-            line += f" · Caveat: {dedup_caveat}"
-            caveats = [c for c in caveats if c != dedup_caveat]
+        required_caveats = [c for c in caveats if (
+            c == dedup_caveat
+            or "was not checked for repeated higher-grain values" in c
+            or "could not be checked for repeated higher-grain values" in c
+        )]
+        for caveat in required_caveats:
+            line += f" · Caveat: {caveat}"
+        caveats = [c for c in caveats if c not in required_caveats]
         details = []
         if metric.rationale:
             details.append(" ".join(metric.rationale.split()))

@@ -23,6 +23,39 @@ def test_serialization_outputs(sales_frame):
     assert "DATASET" in compact
 
 
+@pytest.mark.parametrize("values", [[1.0, 5.0], [1.0, 5.0, None], [1.0, 5.0, 9.0]])
+def test_small_sample_variability_redaction_includes_repeated_evidence(values):
+    context = inspect(pd.DataFrame({"amount": values}))
+    column = context.get_column("amount")
+    deviation = column.statistics.standard_deviation
+    assert deviation is not None
+    opt_in_before = context.to_dict(include_values=True)
+    small_sample = column.cardinality.observed_count < 3
+
+    for include_values in (False, True):
+        exported = context.to_dict(include_values=include_values)
+        assert json.loads(context.to_json(include_values=include_values)) == exported
+        projected = exported["columns"][0]
+        evidence_groups = [projected["semantic"]["evidence"]]
+        evidence_groups.extend(r["evidence"] for r in projected["recommendations"])
+        assert len(evidence_groups) > 1
+        for evidence in evidence_groups:
+            variability = next(e for e in evidence if e["code"] == "numeric_value_variability")
+            assert variability["statement"]
+            if small_sample and not include_values:
+                assert "standard_deviation" not in variability["details"]
+            else:
+                assert variability["details"]["standard_deviation"] == deviation
+        assert projected["statistics"]["standard_deviation"] == (
+            None if small_sample and not include_values else deviation
+        )
+
+    assert context.to_dict(include_values=True) == opt_in_before
+    assert column.statistics.standard_deviation == deviation
+    local_evidence = next(e for e in column.semantic.evidence if e.code == "numeric_value_variability")
+    assert local_evidence.details["standard_deviation"] == deviation
+
+
 @pytest.mark.parametrize(
     ("values", "observed_count", "ratio"),
     [
@@ -798,6 +831,28 @@ def _strict_json_loads(payload: str):
         raise AssertionError(f"Nonstandard JSON constant emitted: {constant}")
 
     return json.loads(payload, parse_constant=reject_constant)
+
+
+@pytest.mark.parametrize(
+    ("sample", "expected"),
+    [
+        ([np.array([42, 43]), np.array([42])], [[42, 43], [42]]),
+        (np.array([], dtype=float), []),
+        (np.array([np.nan, np.inf, -np.inf, 1.5]), [None, None, None, 1.5]),
+        (np.array([2**64 - 1], dtype=np.uint64), [2**64 - 1]),
+        (np.array([1.25], dtype=np.longdouble), [1.25]),
+        ([np.int64(42), np.float64(1.5), np.array(7)], [42, 1.5, 7]),
+    ],
+    ids=["nested-vectors", "empty", "non-finite", "uint64", "longdouble", "scalars"],
+)
+def test_structured_samples_preserve_numeric_vector_shape(sample, expected):
+    context = inspect(pd.DataFrame({"payload": [sample]}))
+
+    exported = context.to_dict(include_values=True)
+    assert exported["columns"][0]["statistics"]["top_values"] == [[expected, 1]]
+    assert _strict_json_loads(context.to_json(include_values=True)) == exported
+    assert context.to_dict()["columns"][0]["statistics"]["top_values"] == []
+    assert _strict_json_loads(context.to_json()) == context.to_dict()
 
 
 def test_structured_exports_handle_numpy_longdouble_index_name():

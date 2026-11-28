@@ -119,6 +119,12 @@ def _normalize(
         return None if np.isnat(value) else str(np.datetime_as_string(value, unit="auto"))
     if isinstance(value, np.timedelta64):
         return _timedelta_iso8601(value)
+    if isinstance(value, np.ndarray) and value.ndim == 1 and value.dtype.kind in "biufc":
+        # Preserve vector shape before .item() can unwrap a one-element array.
+        return _normalize(
+            value.tolist(), include_values, evidence_details=evidence_details,
+            _active=_active, _path=_path,
+        )
     if hasattr(value, "item"):
         try:
             unwrapped = value.item()
@@ -164,6 +170,12 @@ def to_dict(context: Any, *, include_values: bool = False) -> dict[str, Any]:
                 for field in ("mean", "median", "standard_deviation", "skewness"):
                     statistics[field] = None
                 statistics["quantiles"] = {}
+                # Semantic evidence is also copied into column guidance.
+                # Redact each exported copy without changing the local model.
+                for owner in [column["semantic"], *column["recommendations"], *column["warnings"]]:
+                    for evidence in owner["evidence"]:
+                        if evidence["code"] == "numeric_value_variability":
+                            evidence["details"].pop("standard_deviation", None)
     return result
 
 
