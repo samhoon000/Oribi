@@ -84,7 +84,7 @@ Oribi profiles the DataFrame in memory and does not keep a reference to it in th
 
 Top values are ranked by frequency using pandas equality and counts. Ties use a stable value order for supported types, including strings, built-in numbers, and common date and time values. Tied opaque objects without a stable value key follow pandas count order, so reordering rows or categories can change which of them appears at the cutoff. Profiling does not call their `repr()` to rank them.
 
-`to_dict`, `to_json`, `to_markdown`, and `to_context` accept `include_values`. `summary()` does not. With the default `include_values=False`, those four exports omit sampled cell values and exact bounds. Dictionary and JSON exports still keep `top_frequencies` (the counts, without the sampled values) and omit strings in evidence details. They also omit means, medians, standard deviations, skewness, and quantiles when fewer than three non-missing values were observed.
+`to_dict`, `to_json`, `to_markdown`, and `to_context` accept `include_values`. `summary()` does not. With the default `include_values=False`, those four exports omit sampled cell values and exact bounds. Dictionary and JSON exports still keep `top_frequencies` (the counts, without the sampled values) and omit strings in evidence details. They also omit means, medians, standard deviations, skewness, and quantiles when fewer than three non-missing values were observed. This includes standard deviations repeated in semantic and recommendation evidence; the statement that values vary remains available.
 
 You can explicitly include local values and bounds when exporting:
 
@@ -133,7 +133,7 @@ Oribi uses deterministic heuristics based on observed values, data types, and su
 - A likely grain describes a pattern in the observed rows. It can remain undetermined when the evidence is weak or ambiguous.
 - A relationship within one DataFrame does not prove that a join to another table is valid or safe.
 - An exact functional dependency points from the determining column to the dependent column. Its `mapping_cardinality` distinguishes many-to-one from one-to-one. One-to-many links point from group to entity and require a verified entity key. Mapping coverage is the fraction of observed determinant values with exactly one partner. For one-to-many links the entity is the determinant, so coverage is measured from the target back to the source. Missing pairs or conflicting partners cannot establish an exact dependency.
-- Confidence scores describe heuristic strength. They are not calibrated probabilities.
+- Confidence scores describe heuristic strength. They are not calibrated probabilities. Directional mapping repetition and generalization support count complete source-target pairs before deduplication; rows missing either value do not add support. Mapping coverage still uses all observed determinant values, and paired/missing row counts remain available separately.
 
 Use the profile as evidence for further analysis, and check whether each inference fits the dataset's actual domain. For a runnable Python example that inspects `context.candidate_keys` (`columns` and `verified_unique`) alongside `context.grain`, see [examples/quickstart.py](examples/quickstart.py) (`python -m examples.quickstart`).
 
